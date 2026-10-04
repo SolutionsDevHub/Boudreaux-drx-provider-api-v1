@@ -1,0 +1,51 @@
+{
+  "configs": [
+    "global.xml",
+    "drx-provider-api.xml",
+    "implementation/shipment.xml",
+    "subscriber.xml",
+    "global-error-handler.xml",
+    "common/common.xml",
+    "implementation/prescription-fill.xml"
+  ],
+  "secureProperties": [],
+  "supportedJavaVersions": [],
+  "redeploymentEnabled": true,
+  "name": "com.mycompany:drx-provider-api:1.0.0-SNAPSHOT",
+  "minMuleVersion": "4.9.0",
+  "requiredProduct": "MULE_EE",
+  "classLoaderModelLoaderDescriptor": {
+    "id": "mule",
+    "attributes": {
+      "exportedPackages": [],
+      "exportedResources": [
+        "application-types.xml",
+        "common/common.xml",
+        "config/config-dev.yaml",
+        "config/config-prod.yaml",
+        "config/config-secured-dev.yaml",
+        "config/config-secured-prod.yaml",
+        "config/config.yaml",
+        "drx-provider-api.xml",
+        "dwl/common-request.dwl",
+        "dwl/connection.dwl",
+        "dwl/create-prescription-fill.dwl",
+        "dwl/create-shipment.dwl",
+        "dwl/email.dwl",
+        "global-error-handler.xml",
+        "global.xml",
+        "implementation/prescription-fill.xml",
+        "implementation/shipment.xml",
+        "log4j2.xml",
+        "subscriber.xml"
+      ]
+    }
+  },
+  "bundleDescriptorLoader": {
+    "id": "mule",
+    "attributes": {}
+  },
+  "javaSpecificationVersions": [
+    "17"
+  ]
+}

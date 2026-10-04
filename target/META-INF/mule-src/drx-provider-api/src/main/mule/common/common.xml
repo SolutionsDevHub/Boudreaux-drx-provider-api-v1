@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns:outlook365="http://www.mulesoft.org/schema/mule/outlook365" xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/outlook365 http://www.mulesoft.org/schema/mule/outlook365/current/mule-outlook365.xsd">
+	<sub-flow name="common-request-flow" doc:id="4ae70240-d593-4eb5-945b-4a702be715d2" >
+		<logger level="INFO" doc:name="Before Request" doc:id="28c748bf-fc57-48b2-92cb-bb1e79fa5ab4" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Request sent to create " ++ vars.entity ++ " records in " &#10;}]'/>
+		<until-successful maxRetries="${retry.numRetries}" doc:name="Until Successful" doc:id="cb48039f-79fd-4884-b59d-2abf9993a424" millisBetweenRetries="${retry.delayMillisecs}">
+			<try doc:name="Try" doc:id="6c15dd79-a1b1-49ee-ab9f-233917156030" >
+				<http:request method="#[vars.request.method]" doc:name="common-request-flow" doc:id="0a8710f1-536e-4851-902f-008692975fa9" url="#[vars.request.url]" >
+					<http:headers ><![CDATA[#[vars.request.headers default vars.request.header default {}]]]></http:headers>
+					<http:uri-params ><![CDATA[#[vars.request.uriParams default {}]]]></http:uri-params>
+					<http:query-params ><![CDATA[#[vars.request.queryParams default {}]]]></http:query-params>
+				</http:request>
+				<error-handler ref="common-error-handler" />
+			</try>
+		</until-successful>
+		<choice doc:name="Choice" doc:id="ac852e99-05b2-4874-9669-2919a1117da2" >
+			<when expression="#[!isEmpty(vars.haltFlow) and (vars.haltFlow)]" >
+				<raise-error doc:name="PROCESS:HALT_FLOW" doc:id="66786f3d-8e16-4355-8773-a12165cbddd3" type="PROCESS:HALT_FLOW" description='#[vars.error.errorMessage]' />
+			</when>
+			<otherwise >
+				<logger level="INFO" doc:name="After Request" doc:id="163b1602-9c04-481d-b26f-7bfec07ad352" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Response received after creation of " ++ vars.entity ++ " records in " &#10;}]' />
+			</otherwise>
+		</choice>
+	</sub-flow>
+	<sub-flow name="common-db-search-flow" doc:id="4e37a065-5f46-416d-9d69-3b693b233a74" >
+		<logger level="INFO" doc:name="Before Request" doc:id="5d62ed5f-e33c-4922-b07d-a7da9f3acdfa" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Request sent to database to " ++ vars.action ++ " " ++ vars.entity ++ " records"&#10;}]' />
+		<db:select doc:name="Query Database Records" doc:id="9b28aa6e-1799-462d-91a3-faaf66b6ebfe" config-ref="Database_Config">
+			<db:sql ><![CDATA[#[vars.dbSearch.query]]]></db:sql>
+			<db:input-parameters><![CDATA[#[vars.dbSearch.inputParameters]]]></db:input-parameters>
+		</db:select>
+		<logger level="INFO" doc:name="After Request" doc:id="209ca3b3-c401-4ee0-9123-9e2ec7543d32" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Response received from database after " ++ vars.action ++ " " ++ vars.entity ++ " records"&#10;}]' />
+	</sub-flow>
+	<sub-flow name="common-email-flow" doc:id="ac36ee0e-fd54-4cfb-b125-55d41176b25a" >
+		<logger level="INFO" doc:name="Before Request" doc:id="9ccd7cf4-e6fd-43f6-9506-458435bee76e" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Before sending an email for the failure status"&#10;}]'/>
+		<outlook365:send-mail doc:name="Send mail" doc:id="6a1d7db8-a612-43a1-90ab-82e234742abb" config-ref="Outlook365_Outlook365_Config" userId="${outlook.fromAddress}">
+			<outlook365:message ><![CDATA[#[vars.email]]]></outlook365:message>
+		</outlook365:send-mail>
+		<logger level="INFO" doc:name="After Request" doc:id="afd371ee-9164-4cc4-9254-de451b03cdcc" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "After sending an email for the failure status"&#10;}]'/>
+	</sub-flow>
+</mule>

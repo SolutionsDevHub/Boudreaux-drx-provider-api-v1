@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dcaf5f94-cb8a-4545-a03d-7b50bd05e8f9</groupId>
+  <artifactId>drx-provider-api</artifactId>
+  <version>1.0.1</version>
+  <name>drx-provider-api</name>
+  <properties>
+    <classifier>raml</classifier>
+    <main>drx-provider-api.raml</main>
+    <status>published</status>
+    <originalFormatVersion>1.0</originalFormatVersion>
+    <apiVersion>v1</apiVersion>
+    <projectId>cd63fee1-02c6-4eac-9a22-4b586a64357a</projectId>
+    <branchId>master</branchId>
+    <commitId>3c07e05c06237dbc4738ef39746437c16cee585d</commitId>
+    <keywords/>
+    <type>rest-api</type>
+    <mainFile>drx-provider-api.raml</mainFile>
+  </properties>
+  <repositories>
+    <repository>
+      <id>anypoint-exchange</id>
+      <url>http://maven.anypoint.mulesoft.com/api/v3/maven</url>
+    </repository>
+  </repositories>
+</project>

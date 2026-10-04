@@ -1,0 +1,118 @@
+# Autodiscovery Id
+api:
+    id: "21127035"
+    
+#Any Point MQ
+anypoint:
+ mq:
+  url: "https://mq-us-east-1.anypoint.mulesoft.com/api/v1/organizations/dcaf5f94-cb8a-4545-a03d-7b50bd05e8f9/environments/8e63d365-1829-46ff-970f-fe839ce062ab"
+  retryQueue: "drx-provider-post-retry-queue-dev"
+  
+# Outlook
+outlook:
+  toRecipients: "bhargav_k@cloudodyssey.co, cdowling@bndsrx.com"
+  
+#Database
+db:
+ url: "jdbc:postgresql://mulesoft-integration-db.cenq040sejtv.us-east-1.rds.amazonaws.com:5432/mulesoft" 
+ driverClassName: "org.postgresql.Driver" 
+ user: "mulesoft_integration" 
+ searchWithDRXId: "SELECT * FROM PROVIDER_DRX_ENTITY_MAPPING_DEV WHERE drx_id = :drx_id AND entity = :entity"
+ searchWithDRXIds: "SELECT * FROM PROVIDER_DRX_ENTITY_MAPPING_DEV WHERE drx_id In ('"
+ recordPartnerPrescription: "INSERT INTO PROVIDER_DRX_ENTITY_MAPPING_DEV (external_id, provider_external_id, provider, provider_code, provider_id, entity, drx_id) SELECT :external_id, :provider_external_id, :provider, :provider_code, :provider_id, 'prescription', :drx_id WHERE NOT EXISTS (SELECT 1 FROM PROVIDER_DRX_ENTITY_MAPPING_DEV WHERE drx_id = :drx_id_check AND entity = 'prescription') ON CONFLICT (external_id) DO NOTHING"
+ searchWithDRXIdList: "SELECT * FROM PROVIDER_DRX_ENTITY_MAPPING_DEV WHERE entity = :entity AND drx_id = ANY(string_to_array(:drx_ids, ','))"
+ labelDeliveryDdl: "CREATE TABLE IF NOT EXISTS PROVIDER_LABEL_DELIVERY_DEV (label_id BIGINT NOT NULL, provider_code VARCHAR(10) NOT NULL, status VARCHAR(20) NOT NULL, source VARCHAR(10) NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, http_status INTEGER, last_error VARCHAR(300), payload TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), sent_at TIMESTAMPTZ, PRIMARY KEY (label_id, provider_code))"
+ labelStateDdl: "CREATE TABLE IF NOT EXISTS PROVIDER_LABEL_SWEEP_STATE_DEV (name VARCHAR(50) PRIMARY KEY, value VARCHAR(200), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+ labelClaim: "INSERT INTO PROVIDER_LABEL_DELIVERY_DEV AS d (label_id, provider_code, status, source, attempts, payload) VALUES (CAST(:label_id AS BIGINT), :provider_code, 'sending', :source, 1, :payload) ON CONFLICT (label_id, provider_code) DO UPDATE SET status = 'sending', source = EXCLUDED.source, attempts = d.attempts + 1, payload = COALESCE(EXCLUDED.payload, d.payload), updated_at = now() WHERE d.status NOT IN ('sent', 'sending') OR (d.status = 'sending' AND d.updated_at < now() - interval '30 minutes')"
+ labelMark: "UPDATE PROVIDER_LABEL_DELIVERY_DEV SET status = :status, http_status = CAST(:http_status AS INTEGER), last_error = :last_error, sent_at = CASE WHEN :sent = 'yes' THEN now() ELSE sent_at END, updated_at = now() WHERE label_id = CAST(:label_id AS BIGINT) AND provider_code = :provider_code"
+ labelRecord: "INSERT INTO PROVIDER_LABEL_DELIVERY_DEV AS d (label_id, provider_code, status, source, attempts, payload, last_error) VALUES (CAST(:label_id AS BIGINT), :provider_code, :status, :source, 1, :payload, :last_error) ON CONFLICT (label_id, provider_code) DO UPDATE SET status = EXCLUDED.status, source = EXCLUDED.source, attempts = d.attempts + 1, payload = COALESCE(EXCLUDED.payload, d.payload), last_error = EXCLUDED.last_error, updated_at = now() WHERE d.status NOT IN ('sent', 'sending')"
+ labelKnown: "SELECT label_id FROM PROVIDER_LABEL_DELIVERY_DEV WHERE label_id = ANY(CAST(string_to_array(:ids, ',') AS BIGINT[])) AND NOT (status = 'lookup_failed' AND attempts < 4 AND updated_at < now() - interval '10 minutes')"
+ labelRetrySelect: "SELECT label_id, provider_code, status, attempts, payload FROM PROVIDER_LABEL_DELIVERY_DEV WHERE provider_code <> '-' AND payload IS NOT NULL AND attempts < CAST(:max_attempts AS INTEGER) AND created_at > now() - CAST(:window_hours || ' hours' AS INTERVAL) AND ((status = 'failed' AND updated_at < now() - CAST(:retry_minutes || ' minutes' AS INTERVAL)) OR (status = 'sending' AND updated_at < now() - interval '30 minutes') OR (status = 'dry_run' AND created_at > now() - CAST(:backfill_hours || ' hours' AS INTERVAL))) ORDER BY created_at LIMIT 50"
+ labelStateGet: "SELECT name, value FROM PROVIDER_LABEL_SWEEP_STATE_DEV"
+ labelStateSet: "INSERT INTO PROVIDER_LABEL_SWEEP_STATE_DEV (name, value) VALUES (:name, :value) ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()"
+ labelReportCounts: "SELECT provider_code, status, source, COUNT(*) AS n FROM PROVIDER_LABEL_DELIVERY_DEV WHERE created_at > now() - interval '24 hours' GROUP BY provider_code, status, source ORDER BY provider_code, status, source"
+ labelReportOpen: "SELECT label_id, provider_code, status, attempts, http_status, last_error, CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT) AS created_epoch FROM PROVIDER_LABEL_DELIVERY_DEV WHERE status IN ('failed', 'rejected', 'sending', 'lookup_failed') AND created_at > now() - interval '72 hours' ORDER BY created_at DESC LIMIT 100"
+ testCatcherDdl: "CREATE TABLE IF NOT EXISTS PROVIDER_TEST_CATCHER_DEV (id BIGSERIAL PRIMARY KEY, received_at TIMESTAMPTZ NOT NULL DEFAULT now(), path VARCHAR(300), headers TEXT, body TEXT)"
+ testCatcherInsert: "INSERT INTO PROVIDER_TEST_CATCHER_DEV (path, headers, body) VALUES (:path, :headers, :body)"
+ testCatcherCleanup: "DELETE FROM PROVIDER_TEST_CATCHER_DEV WHERE received_at < now() - CAST(:days || ' days' AS INTERVAL)"
+
+# r15: label sweep (DEV: live, with test labels)
+labelSweep:
+  enabled: "true"
+  dryRun: "false"
+  reportDaily: "false"
+  reportOnStartup: "true"
+  reportEmail: "true"
+  reportSubjectPrefix: "[DEV] "
+  startDelayMinutes: "2"
+  reportStartupDelayMinutes: "15"
+  reportHidePartners: ""
+  fixtureLabels: '[{"id": 916000001, "prescription_fill_id": 213901, "packing_list_id": null, "tracking_number": "SWEEPTEST916000001", "carrier_code": "ups", "service_code": "ups_ground", "created_at": "2026-09-28T00:00:00", "voided": false}, {"id": 916000002, "prescription_fill_id": null, "packing_list_id": null, "tracking_number": "SWEEPTEST916000002", "carrier_code": "ups", "service_code": "ups_ground", "created_at": "2026-09-28T00:00:00", "voided": false}, {"id": 916000003, "prescription_fill_id": 213901, "packing_list_id": null, "tracking_number": "SWEEPTEST916000003", "carrier_code": "ups", "service_code": "ups_ground", "created_at": "2026-09-28T00:00:00", "voided": true}, {"id": 916000004, "prescription_fill_id": 999999999, "packing_list_id": null, "tracking_number": "SWEEPTEST916000004", "carrier_code": "ups", "service_code": "ups_ground", "created_at": "2026-09-28T00:00:00", "voided": false}]'
+  drx:
+    host: "staging.drxapp.com"
+
+# r16: test endpoint for BND, our test tenant
+testCatcher:
+  enabled: "true"
+  
+#Providers
+wsy:
+  url: "https://services.careconnect.dev.wellsync.io/v1/webhook/pharmacy/boudreaux"
+lum:
+  url: "https://api-staging.lumimeds.com/api/pharmacy/boudreaux/webhook"
+amb:
+  url: "https://lash-platform-admin-git-hotfix-bourdeaux-pha-7b1c82-bask-health.vercel.app/api/webhook/pharmacy-fulfillment?pharmacyId=262953"
+arc:
+  url: ""
+ash:
+  url: ""
+bsk:
+  url: "https://lash-platform-admin-git-hotfix-bourdeaux-pha-7b1c82-bask-health.vercel.app/api/webhook/pharmacy-fulfillment?pharmacyId=262953"
+bge:
+  url: "https://us-central1-onlyscripts-staging.cloudfunctions.net/boudreauxDrxWebhook"
+bom:
+  url: "https://services.careconnect.dev.wellsync.io/v1/webhook/pharmacy/boudreaux"
+bnd:
+  url: "https://drx-provider-api-dev-j1cy7o.sehsio.usa-e2.cloudhub.io/test-catcher/bnd"
+crv:
+  url: ""
+edn:
+  url: "https://staging-admin.eden.health/api/webhooks/boudreaux"
+eng:
+  url: ""
+fdm:
+  url: ""
+mpr:
+  url: ""
+mch:
+  url: ""
+msg:
+  url: ""
+nov:
+  url: ""
+ons:
+  url: "https://us-central1-onlyscripts-staging.cloudfunctions.net/boudreauxDrxWebhook"
+ord:
+  url: ""
+pmd:
+  url: "https://staging.preventivemd.com/api/pharmacy/drx/webhook"
+scs:
+  url: ""
+shn:
+  url: "https://webhooks.fulfillment.shinerx.dev/boudreaux"
+svg:
+  url: ""
+tlg:
+  url: "https://ctrl-rest-dev.telegramd.com/api/v1/webhook/pharmacy/8a29308486"
+trt:
+  url: ""
+vit:
+  url: ""
+wlm:
+  url: "https://stagingadminapi.welliemd.com/api/v1/webhooks/drx/{event}"
+mhi:
+  url: "https://flow.zoho.com/689592716/flow/webhook/incoming"
+ovh:
+  url: ""
+gim:
+  url: "https://lash-platform-admin-git-hotfix-bourdeaux-pha-7b1c82-bask-health.vercel.app/api/webhook/pharmacy-fulfillment?pharmacyId=262953"

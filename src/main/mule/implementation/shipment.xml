@@ -1,0 +1,1025 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd">
+	<!-- r15: DRX reads for the label sweep, with the pharmacy app's DRX key (secure::drx.key) -->
+	<http:request-config name="DRX_Label_Request_Config" doc:name="DRX Label Request Config" doc:id="0b983b99-e329-4aa0-92d2-e3edca400522" basePath="${labelSweep.drx.basePath}">
+		<http:request-connection protocol="HTTPS" host="${labelSweep.drx.host}" port="443" />
+	</http:request-config>
+	<sub-flow name="create-shipment-flow" doc:id="135e163a-c2c9-4301-85c1-95514e070c95" >
+		<!-- Each fill carries the order's CODE: prefix in external_id (= prescription.surescripts_erx_id) -->
+		<ee:transform doc:name="Resolve Partner" doc:id="7c2d9e41-5a3b-4f6c-8d1e-2b9a0f4c6e13" >
+			<ee:message />
+			<ee:variables >
+				<ee:set-variable variableName="routing" ><![CDATA[%dw 2.0
+import * from dw::core::Strings
+output application/json
+var codes = keysOf(vars.connectionDetails default {}) map ($ as String)
+var fills = payload.fills default []
+var refs = flatten(fills map ((f) -> [f.external_id, f.prescription.surescripts_erx_id, f.prescription.surescripts_erx_order_number]))
+	filter ((r) -> if (r is String) ((r contains ":") and (codes contains substringBefore(r, ":"))) else false)
+---
+{
+	code: if (isEmpty(refs)) "" else substringBefore(refs[0], ":"),
+	ref: if (isEmpty(refs)) null else substringAfter(refs[0], ":"),
+	source: if (isEmpty(refs)) null else "prefix",
+	prescriptionId: (fills map ((f) -> f.prescription_id default f.prescription.id) filter ($ != null))[0],
+	prescriptionIds: (fills map ((f) -> f.prescription_id default f.prescription.id) filter ($ != null)) map ($ as String) distinctBy $
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Prefix found?" doc:id="b0ae6cb7-f449-4ff1-b744-72f487e178b9">
+			<when expression="#[isEmpty(vars.routing.code) and (vars.routing.prescriptionId != null)]">
+				<!-- Orders created through POST /prescriptions have no prefix in DRX; the pharmacy API records them in the mapping table.
+				     Look up every fill's prescription: the first fill on a label need not be one that was recorded. -->
+				<ee:transform doc:name="Set Prescription Search Request" doc:id="5b60333c-04c5-462f-8792-2b97d83ac795">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable variableName="dbSearch"><![CDATA[%dw 2.0
+output application/json
+---
+{
+	query: p('db.searchWithDRXIdList'),
+	inputParameters: {
+		"drx_ids": (vars.routing.prescriptionIds default []) joinBy ",",
+		"entity": p('prescription')
+	}
+}]]></ee:set-variable>
+						<ee:set-variable variableName="action"><![CDATA[%dw 2.0
+output application/json
+---
+p('retrieve')]]></ee:set-variable>
+						<ee:set-variable variableName="entity"><![CDATA[%dw 2.0
+output application/json
+---
+p('prescription')
+]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<flow-ref doc:name="common-db-search-flow" doc:id="38413901-bf38-478d-b2b4-a150b0cb0f99" name="common-db-search-flow" target="dbSearchResponse" />
+				<ee:transform doc:name="Partner From Mapping Table" doc:id="80ffdacb-bf62-42b3-ba84-e883395342a3">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable variableName="routing"><![CDATA[%dw 2.0
+import * from dw::core::Strings
+output application/json
+var rows = vars.dbSearchResponse default []
+var code = rows[0].provider_code default ""
+// provider_external_id is the partner's own id; external_id is only the row key
+fun extOf(row) = if (isEmpty(row.provider_external_id)) row.external_id else row.provider_external_id
+fun refOf(row) = do {
+	var ext = extOf(row)
+	---
+	if (ext is String) (if (ext startsWith (code ++ ":")) substringAfter(ext, ":") else ext) else ext
+}
+var mine = rows filter ((r) -> r.provider_code == code)
+---
+{
+	code: code,
+	ref: if (isEmpty(mine)) null else refOf(mine[0]),
+	source: if (isEmpty(code)) null else "db",
+	prescriptionId: vars.routing.prescriptionId,
+	// the partner's order id for each of its prescriptions on this label
+	refsByRx: {( mine map ((r) -> { ((r.drx_id default "") as String): refOf(r) }) )}
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+			</when>
+		</choice>
+		<ee:transform doc:name="Set Request Variables From Routing" doc:id="6924ea0c-d32d-4d2b-b546-007305fe7592">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable variableName="request"><![CDATA[%dw 2.0
+output application/json
+---
+if (isEmpty(vars.routing.code)) null else vars.connectionDetails[vars.routing.code]]]></ee:set-variable>
+				<ee:set-variable variableName="entity"><![CDATA[%dw 2.0
+output application/json
+---
+"shipment"]]></ee:set-variable>
+				<ee:set-variable variableName="externalId"><![CDATA[%dw 2.0
+output application/json
+---
+vars.routing.ref]]></ee:set-variable>
+				<ee:set-variable variableName="id"><![CDATA[%dw 2.0
+output application/json
+---
+payload.shipment.id]]></ee:set-variable>
+				<ee:set-variable variableName="shipmentNumber" ><![CDATA[%dw 2.0
+output application/json
+---
+payload.shipment.id]]></ee:set-variable>
+				<ee:set-variable variableName="trackingNumber" ><![CDATA[%dw 2.0
+output application/json
+---
+payload.shipment.tracking_number]]></ee:set-variable>
+				<ee:set-variable variableName="provider" ><![CDATA[%dw 2.0
+output application/json
+---
+vars.routing.code]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<ee:transform doc:name="Set Partner Payload" doc:id="e9b2d4f1-6c7a-4e38-8f1d-5a0c3b2e7d94">
+			<ee:message>
+				<ee:set-payload resource="dwl/create-shipment.dwl" />
+			</ee:message>
+		</ee:transform>
+		<!-- r15: sending (or ignoring) is in deliver-label-flow, which the label sweep and its retries also use -->
+		<flow-ref doc:name="deliver-label-flow" doc:id="f100eba9-d5ad-437f-bddc-c3dae8df40ea" name="deliver-label-flow" />
+	</sub-flow>
+	<!-- r15: sends a partner's shipping label once per (DRX label id, partner). Callers set payload (the partner body),
+	     vars.provider, vars.shipmentNumber (DRX label id) and vars.connectionDetails. vars.labelSource is "webhook" (DRX's
+	     webhook and its queue retries, the default), "sweep" or "retry". Every label is recorded in PROVIDER_LABEL_DELIVERY;
+	     a label that was already sent, or is being sent, is not sent again. vars.labelOutcome says what happened. -->
+	<sub-flow name="deliver-label-flow" doc:id="6ad9a1e9-722f-4c2b-8b42-610ce8c92fa8">
+		<ee:transform doc:name="Set Partner Request" doc:id="6aa56fe1-7f4f-456e-8506-89b758ba55a5">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable variableName="request"><![CDATA[%dw 2.0
+output application/json
+var base = if (isEmpty(vars.provider)) null else vars.connectionDetails[vars.provider]
+---
+if (base == null) null else (vars.provider match {
+	case "PMD" -> base ++ {
+		"queryParams": {
+			"event": "shipping_label"
+		}
+	}
+	case "WLM" -> base ++ {
+		"uriParams": {
+			"event": "shipped"
+		}
+	}
+	else -> base
+})]]></ee:set-variable>
+				<ee:set-variable variableName="labelSource"><![CDATA[%dw 2.0
+output application/java
+---
+vars.labelSource default "webhook"]]></ee:set-variable>
+				<!-- r17: common-request-flow logs vars.entity; the sweep's retries come here without create-shipment-flow, which sets it -->
+				<ee:set-variable variableName="entity"><![CDATA[%dw 2.0
+output application/json
+---
+"shipment"]]></ee:set-variable>
+				<ee:set-variable variableName="labelBody"><![CDATA[%dw 2.0
+output application/java
+---
+write(payload, "application/json", {indent: false})]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Partner Webhook?" doc:id="27d51062-3cce-4331-922d-42fc9f47f67f">
+			<when expression="#[vars.request != null and !isEmpty(vars.request.url)]">
+				<choice doc:name="Dry Run?" doc:id="009c5bf8-66a8-400e-8212-536491b72367">
+					<when expression="#[vars.labelSource == 'sweep' and (vars.labelDryRun default false)]">
+						<set-variable variableName="labelRecord" value='#[{"status": "dry_run", "provider": vars.provider, "error": null, "withPayload": true}]' doc:name="Dry Run Record" doc:id="c33d1425-4e3d-40da-873f-806363404f4c" />
+						<flow-ref doc:name="label-record-flow" doc:id="d364c5cf-46e2-43b0-8633-5b3a2eee0d9a" name="label-record-flow" />
+						<logger level="INFO" doc:name="Log Dry Run" doc:id="73974a6c-a45e-4fbc-bc88-845a4a7c2571" message='#[output application/json --- {"Event": "LABEL SWEEP DRY RUN", "messages": "Would send this shipping label to the partner (dry run: nothing sent)", "provider": vars.provider, "shipment_id": vars.shipmentNumber}]' />
+						<set-variable variableName="labelOutcome" value="dry_run" doc:name="Outcome Dry Run" doc:id="635e57c3-0d4b-4a21-bbf7-c232fd28eb98" />
+					</when>
+					<otherwise>
+						<flow-ref doc:name="label-claim-flow" doc:id="5f347c21-b0d8-4950-ac9c-420424f731ee" name="label-claim-flow" />
+						<choice doc:name="Claimed?" doc:id="5b9b4d8e-9e2a-4bc6-a845-d9a57a400483">
+							<when expression="#[!(vars.labelClaimed default true)]">
+								<logger level="INFO" doc:name="Log Already Delivered" doc:id="9fab1c28-40b3-49bf-ab6e-83990e64a533" message='#[output application/json --- {"messages": "Shipping label already delivered to this partner (or being sent); not sent again", "provider": vars.provider, "shipment_id": vars.shipmentNumber, "source": vars.labelSource}]' />
+								<set-variable variableName="labelOutcome" value="already" doc:name="Outcome Already" doc:id="fa8f4c83-0638-486b-ba57-4ed02d3e5525" />
+								<ee:transform doc:name="Set Already Delivered Response" doc:id="62920304-0177-43fe-bc2d-f00f09e86044">
+									<ee:message>
+										<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"status": "AlreadyDelivered",
+	"provider": vars.provider,
+	"shipmentId": vars.shipmentNumber
+}]]></ee:set-payload>
+									</ee:message>
+									<ee:variables>
+										<ee:set-variable variableName="httpStatus"><![CDATA[%dw 2.0
+output application/json
+---
+200]]></ee:set-variable>
+									</ee:variables>
+								</ee:transform>
+							</when>
+							<otherwise>
+								<logger level="INFO" doc:name="Log Provider Information" doc:id="c960a0ba-99c9-4978-bb50-4fe183470bb6" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Posting shipment information to provider",&#10;	"provider":  vars.provider,&#10;	"shipment_id": vars.shipmentNumber,&#10;	"source": vars.labelSource&#10;}]' />
+								<try doc:name="Send Label" doc:id="b4789524-fc30-4325-a072-70799a43f71f">
+									<!-- a 4xx from an earlier label in the same sweep run must not halt this one -->
+									<set-variable variableName="haltFlow" value="#[false]" doc:name="Reset Halt Flag" doc:id="574da05f-a8d2-4001-9ab4-4ee068a2f989" />
+									<flow-ref doc:name="common-request-flow" doc:id="2944e15e-08d3-4b6d-9e98-01c6bf380e19" name="common-request-flow" />
+									<set-variable variableName="labelRecord" value='#[{"status": "sent", "httpStatus": attributes.statusCode default null, "error": null}]' doc:name="Sent Record" doc:id="f23a24b5-9fe1-4c59-ac33-ff16f4906920" />
+									<flow-ref doc:name="label-mark-flow" doc:id="a46d4521-c95a-48f5-84bc-398e3f7a8a0f" name="label-mark-flow" />
+									<set-variable variableName="labelOutcome" value="sent" doc:name="Outcome Sent" doc:id="b3bb13ab-fbde-4bd8-b693-2975df6170d0" />
+									<set-payload value="#[%dw 2.0&#10;output application/json&#10;---&#10;payload]" doc:name="Set Shipment Output Response" doc:id="b5dc2139-5da7-4c4e-a21c-bd07360fe0a6" />
+									<error-handler>
+										<!-- record the failure, then let it continue as before: DRX's webhook goes to the retry queue, the sweep counts it -->
+										<on-error-propagate enableNotifications="true" logException="true" doc:name="Record Failure" doc:id="89480c19-02e3-4f47-b079-202cac0ebf05">
+											<ee:transform doc:name="Failure Record" doc:id="eb2546e5-c571-4f7e-bfaf-23d20d50a2d2">
+												<ee:message />
+												<ee:variables>
+													<ee:set-variable variableName="labelRecord"><![CDATA[%dw 2.0
+output application/java
+var halted = (error.errorType.identifier default "") == "HALT_FLOW"
+var partnerMessage = vars.error.errorMessage
+var partnerText = if (partnerMessage is String) partnerMessage
+	else if ((partnerMessage is Object) or (partnerMessage is Array)) write(partnerMessage, "application/json", {indent: false})
+	else ""
+var detail = if (halted) ((vars.error.errorType default "") ++ " " ++ partnerText)
+	else ((error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""))
+---
+{
+	"status": if (halted) "rejected" else "failed",
+	"httpStatus": null,
+	"error": if (sizeOf(detail) > 300) detail[0 to 299] else detail
+}]]></ee:set-variable>
+												</ee:variables>
+											</ee:transform>
+											<flow-ref doc:name="label-mark-flow" doc:id="5f66ff0e-c3d0-4d47-b243-2c67725118c2" name="label-mark-flow" />
+											<set-variable variableName="labelOutcome" value="#[vars.labelRecord.status]" doc:name="Outcome Failed" doc:id="9948b569-be4c-4eb4-9530-3a718049f139" />
+										</on-error-propagate>
+									</error-handler>
+								</try>
+							</otherwise>
+						</choice>
+					</otherwise>
+				</choice>
+			</when>
+			<otherwise >
+				<!-- Not a partner order, or the partner has no webhook URL in this environment: acknowledge so DRX does not retry or flag the webhook -->
+				<ee:transform doc:name="Set Ignored Response" doc:id="63275fff-d396-4017-a3cc-e0b1a54c3f48" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"status": "Ignored",
+	"reason_code": if (isEmpty(vars.provider)) "NOT_A_PARTNER_ORDER" else "NO_WEBHOOK_URL",
+	"provider": if (isEmpty(vars.provider)) null else vars.provider,
+	"shipmentId": vars.shipmentNumber
+}]]></ee:set-payload>
+					</ee:message>
+					<ee:variables >
+						<ee:set-variable variableName="httpStatus" ><![CDATA[%dw 2.0
+output application/json
+---
+200]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<logger level="INFO" doc:name="Log Ignored" doc:id="92f3ec1a-731b-4132-87a9-26eedf933bb6" message="#[%dw 2.0&#10;output application/json&#10;---&#10;payload]" />
+				<set-variable variableName="labelOutcome" value='#[if (isEmpty(vars.provider)) "not_partner" else "no_webhook_url"]' doc:name="Outcome Ignored" doc:id="df6d08e1-dbc3-4728-9c0f-3799a7f17724" />
+				<choice doc:name="Sweep?" doc:id="c102fcd8-db60-4181-a759-22403509c0d0">
+					<when expression="#[vars.labelSource == 'sweep']">
+						<!-- the sweep remembers labels it has checked; DRX's webhook does not need to -->
+						<set-variable variableName="labelRecord" value='#[{"status": vars.labelOutcome, "provider": (if (isEmpty(vars.provider)) "-" else vars.provider), "error": null, "withPayload": false}]' doc:name="Ignored Record" doc:id="8f22e681-d4dc-433c-a163-d6ed310952c6" />
+						<flow-ref doc:name="label-record-flow" doc:id="6d4fbcbf-0e31-46d6-833c-85d71c647c83" name="label-record-flow" />
+					</when>
+				</choice>
+			</otherwise>
+		</choice>
+	</sub-flow>
+	<!-- r15: takes the label for sending (0 rows = already sent, or being sent elsewhere). If the ledger is unreachable,
+	     DRX's webhook still goes out as before r15; the sweep and its retries never send without it. -->
+	<sub-flow name="label-claim-flow" doc:id="d32bc464-faf8-4345-9a6d-3d7cf23dc876">
+		<try doc:name="Claim Label" doc:id="144af0ce-654a-445a-8da9-c5c27850f7b4">
+			<db:insert doc:name="Claim Label" doc:id="ac4d32dd-8d17-423b-9d91-01d846a2ab83" config-ref="Database_Config" target="labelClaim">
+				<db:sql><![CDATA[${db.labelClaim}]]></db:sql>
+				<db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+	"label_id": if (vars.shipmentNumber == null) null else (vars.shipmentNumber as String),
+	"provider_code": vars.provider,
+	"source": vars.labelSource,
+	"payload": vars.labelBody
+}]]]></db:input-parameters>
+			</db:insert>
+			<set-variable variableName="labelClaimed" value="#[(vars.labelClaim.affectedRows default 0) &gt; 0]" doc:name="Claimed" doc:id="90be2016-ef0c-4d0f-868e-d55e3cfdc014" />
+			<error-handler>
+				<on-error-continue enableNotifications="true" logException="false" doc:name="Ledger Unavailable" doc:id="11f272a3-6b43-4082-bf12-689efc169c8b">
+					<set-variable variableName="labelClaimed" value="#[vars.labelSource == 'webhook']" doc:name="Webhook Still Sends" doc:id="a7280965-f762-463e-9f94-3baf891e93d3" />
+					<logger level="WARN" doc:name="Log Ledger Unavailable" doc:id="b681edfb-f415-4ef5-9ef9-5b005c8c5ca6" message='#[output application/json --- {"messages": "Label ledger unavailable: " ++ (if (vars.labelClaimed) "sending without the duplicate check" else "not sending"), "provider": vars.provider, "shipment_id": vars.shipmentNumber, "source": vars.labelSource, "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+	<!-- r15: the outcome of a send: vars.labelRecord = {status, httpStatus, error} -->
+	<sub-flow name="label-mark-flow" doc:id="cfbb96f8-266c-4ac8-a77c-71e1224ef2f5">
+		<try doc:name="Mark Label" doc:id="8e47d5a7-8560-4c70-9a97-98e56929fc1e">
+			<db:update doc:name="Mark Label" doc:id="f5be8daf-b987-4c37-b1ae-da8268afd269" config-ref="Database_Config" target="labelMarkResult">
+				<db:sql><![CDATA[${db.labelMark}]]></db:sql>
+				<db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+	"status": vars.labelRecord.status,
+	"http_status": if (vars.labelRecord.httpStatus == null) null else (vars.labelRecord.httpStatus as String),
+	"last_error": vars.labelRecord.error,
+	"sent": if (vars.labelRecord.status == "sent") "yes" else "no",
+	"label_id": if (vars.shipmentNumber == null) null else (vars.shipmentNumber as String),
+	"provider_code": vars.provider
+}]]]></db:input-parameters>
+			</db:update>
+			<error-handler>
+				<on-error-continue enableNotifications="true" logException="false" doc:name="Ledger Unavailable" doc:id="77fccb17-1e0b-4d4a-af66-76b246e6462d">
+					<logger level="WARN" doc:name="Log Mark Failed" doc:id="fc8ba0d2-900e-4ef5-b5ca-53c19bcae118" message='#[output application/json --- {"messages": "Label ledger update failed", "status": vars.labelRecord.status, "provider": vars.provider, "shipment_id": vars.shipmentNumber, "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+	<!-- r15: an outcome that involves no sending: vars.labelRecord = {status, provider, error, withPayload} -->
+	<sub-flow name="label-record-flow" doc:id="70242cbd-f419-41ce-9800-d162837f86b9">
+		<try doc:name="Record Label" doc:id="cef37509-b31f-46e8-b908-c0488c31316f">
+			<db:insert doc:name="Record Label" doc:id="596e9c81-9905-42a1-85f9-5690fb1bb173" config-ref="Database_Config" target="labelRecordResult">
+				<db:sql><![CDATA[${db.labelRecord}]]></db:sql>
+				<db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+	"label_id": if (vars.shipmentNumber == null) null else (vars.shipmentNumber as String),
+	"provider_code": vars.labelRecord.provider default "-",
+	"status": vars.labelRecord.status,
+	"source": vars.labelSource default "sweep",
+	"payload": if (vars.labelRecord.withPayload default false) vars.labelBody else null,
+	"last_error": vars.labelRecord.error
+}]]]></db:input-parameters>
+			</db:insert>
+			<error-handler>
+				<on-error-continue enableNotifications="true" logException="false" doc:name="Ledger Unavailable" doc:id="766b4450-fb86-4339-92a5-07caf44b3af1">
+					<logger level="WARN" doc:name="Log Record Failed" doc:id="717369ab-b78e-4a50-8c43-1cab9adffaa5" message='#[output application/json --- {"messages": "Label ledger write failed", "status": vars.labelRecord.status, "shipment_id": vars.shipmentNumber, "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+				</on-error-continue>
+			</error-handler>
+		</try>
+	</sub-flow>
+	<!-- r15: the label sweep. DRX's Shipping Label webhook does not fire for labels made at a POS sale or in batch runs
+	     (measured 2026-09-28: 426 of 982 labels over 2.7 days never arrived). Every few minutes this reads DRX's label list
+	     (newest first), routes each new label like the webhook does (prefix, then the mapping table) and sends any partner
+	     label that was not sent already. Labels up to the baseline (DRX's newest label when the sweep first ran) are left
+	     alone. labelSweep.dryRun=true records what it would send and sends nothing. -->
+	<flow name="label-sweep-flow" doc:id="01f8d2bf-7d02-426c-9428-032de8d5c5c1" maxConcurrency="1">
+		<scheduler doc:name="Every Few Minutes" doc:id="4eb29fc1-2c6b-424a-8eee-1e9dfd4bbd18">
+			<scheduling-strategy>
+				<fixed-frequency frequency="${labelSweep.frequencyMinutes}" timeUnit="MINUTES" startDelay="${labelSweep.startDelayMinutes}" />
+			</scheduling-strategy>
+		</scheduler>
+		<choice doc:name="Enabled?" doc:id="402b34f8-dc39-4a4c-87e6-0d02eedbb1cb">
+			<when expression="#[p('labelSweep.enabled') == 'true']">
+				<flow-ref doc:name="label-sweep-run-flow" doc:id="f174ae9f-452b-4a92-9506-d55fe618a7a5" name="label-sweep-run-flow" />
+			</when>
+		</choice>
+		<error-handler>
+			<on-error-continue enableNotifications="true" logException="false" doc:name="Sweep Failed" doc:id="6fa1e3b6-4d2b-42dc-81ee-07ddfcbcd1d1">
+				<logger level="ERROR" doc:name="Log Sweep Failed" doc:id="1ac01de0-1370-43c3-ab87-1dd8749b84da" message='#[output application/json --- {"Event": "LABEL SWEEP FAILED", "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""), "httpStatus": error.errorMessage.attributes.statusCode default null}]' />
+			</on-error-continue>
+		</error-handler>
+	</flow>
+	<sub-flow name="label-sweep-run-flow" doc:id="641bba60-08d8-4e2c-b70d-302602d36de6">
+		<ee:transform doc:name="Sweep Settings" doc:id="4123e331-3c80-41b0-a007-daa09e7c2a58">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable variableName="sweep"><![CDATA[%dw 2.0
+output application/java
+---
+{
+	dryRun: p('labelSweep.dryRun') == 'true',
+	settleMinutes: p('labelSweep.settleMinutes') as Number,
+	lookbackHours: p('labelSweep.lookbackHours') as Number,
+	maxPages: p('labelSweep.maxPages') as Number,
+	maxLabels: p('labelSweep.maxLabelsPerRun') as Number,
+	fixture: !isEmpty(p('labelSweep.fixtureLabels') default ""),
+	startedAt: now()
+}]]></ee:set-variable>
+				<ee:set-variable variableName="sweepCounts"><![CDATA[%dw 2.0
+output application/java
+---
+{ sent: 0, dry_run: 0, already: 0, not_partner: 0, no_webhook_url: 0, no_fills: 0, lookup_failed: 0, failed: 0, rejected: 0, unknown: 0 }]]></ee:set-variable>
+				<ee:set-variable variableName="retryCounts"><![CDATA[%dw 2.0
+output application/java
+---
+{ sent: 0, already: 0, failed: 0, rejected: 0, unknown: 0 }]]></ee:set-variable>
+				<ee:set-variable resource="dwl/connection.dwl" variableName="connectionDetails" />
+				<ee:set-variable variableName="realLabels"><![CDATA[%dw 2.0
+output application/java
+---
+[]]]></ee:set-variable>
+				<ee:set-variable variableName="newLabels"><![CDATA[%dw 2.0
+output application/java
+---
+[]]]></ee:set-variable>
+				<ee:set-variable variableName="pagingDone"><![CDATA[%dw 2.0
+output application/java
+---
+false]]></ee:set-variable>
+				<ee:set-variable variableName="listFailed"><![CDATA[%dw 2.0
+output application/java
+---
+false]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<try doc:name="Tables" doc:id="dc8505fc-b1a0-4675-b2f3-6e5b5dc41be6">
+			<!-- the tables normally exist already (label_sweep_sql.py); this covers a fresh database -->
+			<db:execute-ddl doc:name="Ledger Table" doc:id="d52cea0f-02f6-40f5-a2c5-d588bd05c222" config-ref="Database_Config">
+				<db:sql><![CDATA[${db.labelDeliveryDdl}]]></db:sql>
+			</db:execute-ddl>
+			<db:execute-ddl doc:name="State Table" doc:id="430d3c3e-f69e-4d3c-8bdd-d6f2f5710468" config-ref="Database_Config">
+				<db:sql><![CDATA[${db.labelStateDdl}]]></db:sql>
+			</db:execute-ddl>
+			<db:execute-ddl doc:name="Test Catcher Table" doc:id="94d2fb9f-0123-4d47-b6d4-03ab14dd91e6" config-ref="Database_Config">
+				<db:sql><![CDATA[${db.testCatcherDdl}]]></db:sql>
+			</db:execute-ddl>
+			<error-handler>
+				<on-error-continue enableNotifications="true" logException="false" doc:name="Tables Not Created" doc:id="b87ad2a6-b976-4981-96c2-1aa93e38b001">
+					<logger level="WARN" doc:name="Log Tables" doc:id="324c465d-63b8-4dca-8cdf-428a6829f76b" message='#[output application/json --- {"messages": "Label sweep could not create its tables", "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+				</on-error-continue>
+			</error-handler>
+		</try>
+		<db:select doc:name="Sweep State" doc:id="8c1a729e-b856-4351-aa9e-0f021ce0d93f" config-ref="Database_Config" target="sweepState">
+			<db:sql><![CDATA[${db.labelStateGet}]]></db:sql>
+		</db:select>
+		<ee:transform doc:name="Read State" doc:id="6b8cafaf-621d-458a-a106-adfffa84db9e">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable variableName="baseline"><![CDATA[%dw 2.0
+output application/java
+var v = ((vars.sweepState default []) filter ($.name == "baseline_label_id"))[0].value
+---
+if (isEmpty(v)) null else (v as Number)]]></ee:set-variable>
+				<ee:set-variable variableName="highWater"><![CDATA[%dw 2.0
+output application/java
+var v = ((vars.sweepState default []) filter ($.name == "high_water_label_id"))[0].value
+---
+if (isEmpty(v)) 0 else (v as Number)]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="First Run?" doc:id="1f61bf54-8167-4010-8ae6-ce1a5294f236">
+			<when expression="#[vars.baseline == null]">
+				<!-- labels DRX made before the sweep existed are not the sweep's: start after DRX's newest label -->
+				<try doc:name="Newest Label" doc:id="86a3cbc6-9f1c-4fe3-a138-d9e4f6f66c86">
+					<http:request method="GET" doc:name="DRX Newest Labels" doc:id="84ebf0a2-2316-4929-8261-31d39fed2bfb" config-ref="DRX_Label_Request_Config" path="/shipping/labels" target="drxPage" responseTimeout="60000">
+						<http:headers><![CDATA[#[{"X-DRX-Key": p('secure::drx.key'), "Accept": "application/json"}]]]></http:headers>
+						<http:query-params><![CDATA[#[{"limit": 100, "offset": 0}]]]></http:query-params>
+					</http:request>
+					<set-variable variableName="baselineValue" value="#[max((vars.drxPage.shipments default []) map ($.id as Number)) default 0]" doc:name="Baseline Value" doc:id="a1687ced-aa39-4429-a009-2e3a625e8e6c" />
+					<error-handler>
+						<on-error-continue enableNotifications="true" logException="false" doc:name="No Baseline" doc:id="63d7ad3c-39a4-4b3e-a695-b22a343a0fc3">
+							<logger level="ERROR" doc:name="Log No Baseline" doc:id="4758ab18-6531-4ecd-b5da-825589705493" message='#[output application/json --- {"Event": "LABEL SWEEP", "messages": "Cannot read DRX shipping labels; the sweep will try again next run", "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""), "httpStatus": error.errorMessage.attributes.statusCode default null}]' />
+							<!-- test labels (DEV) still run without DRX's list -->
+							<set-variable variableName="baselineValue" value="#[if (vars.sweep.fixture) 0 else null]" doc:name="Baseline Value" doc:id="5ac12cd0-becf-4491-aa0b-2047d6f2bb0b" />
+						</on-error-continue>
+					</error-handler>
+				</try>
+				<choice doc:name="Baseline Found?" doc:id="c3b5758e-7ebc-4f22-a941-fa010934a456">
+					<when expression="#[vars.baselineValue != null]">
+						<db:insert doc:name="Save Baseline" doc:id="d1d46e51-437f-4f72-967e-3ae8150887c4" config-ref="Database_Config" target="stateResult">
+							<db:sql><![CDATA[${db.labelStateSet}]]></db:sql>
+							<db:input-parameters><![CDATA[#[{"name": "baseline_label_id", "value": vars.baselineValue as String}]]]></db:input-parameters>
+						</db:insert>
+						<db:insert doc:name="Save High Water" doc:id="1419e9e5-f99c-4cde-a73a-5f8036a86102" config-ref="Database_Config" target="stateResult">
+							<db:sql><![CDATA[${db.labelStateSet}]]></db:sql>
+							<db:input-parameters><![CDATA[#[{"name": "high_water_label_id", "value": vars.baselineValue as String}]]]></db:input-parameters>
+						</db:insert>
+						<set-variable variableName="baseline" value="#[vars.baselineValue]" doc:name="Baseline" doc:id="1e388c5b-3c6f-4421-b1aa-4e6d2bd5cb44" />
+						<set-variable variableName="highWater" value="#[vars.baselineValue]" doc:name="High Water" doc:id="c217b657-d841-48a2-85ce-663f41b19441" />
+						<logger level="INFO" doc:name="Log Baseline" doc:id="7a009783-c0ef-48b3-b1ee-0fb31a32a59c" message='#[output application/json --- {"Event": "LABEL SWEEP", "messages": "Baseline set: the sweep checks DRX labels newer than this one", "baseline": vars.baseline}]' />
+					</when>
+				</choice>
+			</when>
+		</choice>
+		<choice doc:name="Baseline Known?" doc:id="a515bc9b-751e-4cdd-8f73-d9553436439d">
+			<when expression="#[vars.baseline != null]">
+				<foreach doc:name="DRX Label Pages" doc:id="f7270de3-13a9-4f37-b205-cc504a4d8d3a" collection="#[(0 to ((vars.sweep.maxPages as Number) - 1)) as Array]">
+					<choice doc:name="More Pages?" doc:id="9c24c397-c7a9-45ab-9152-0ad36deb9459">
+						<when expression="#[!(vars.pagingDone)]">
+							<set-variable variableName="pageIndex" value="#[payload as Number]" doc:name="Page Index" doc:id="bd886f4b-c885-4958-bd17-cfba8aadc0f8" />
+							<try doc:name="Read Page" doc:id="e50cfbfa-3bd5-49a8-92cf-520c9642b4af">
+								<http:request method="GET" doc:name="DRX Labels" doc:id="67481af2-6e4f-4957-b064-5fe35a852ebb" config-ref="DRX_Label_Request_Config" path="/shipping/labels" target="drxPage" responseTimeout="60000">
+									<http:headers><![CDATA[#[{"X-DRX-Key": p('secure::drx.key'), "Accept": "application/json"}]]]></http:headers>
+									<http:query-params><![CDATA[#[{"limit": 100, "offset": vars.pageIndex * 100}]]]></http:query-params>
+								</http:request>
+								<ee:transform doc:name="Collect Page" doc:id="8977143f-d743-4d53-a866-c7b29efa9fce">
+									<ee:message />
+									<ee:variables>
+										<!-- keep only what routing needs: DRX label rows also carry the patient's name and address -->
+										<ee:set-variable variableName="realLabels"><![CDATA[%dw 2.0
+output application/java
+var rows = vars.drxPage.shipments default []
+---
+vars.realLabels ++ (rows map ((l) -> {
+	id: l.id,
+	prescription_fill_id: l.prescription_fill_id,
+	packing_list_id: l.packing_list_id,
+	tracking_number: l.tracking_number,
+	carrier_code: l.carrier_code,
+	service_code: l.service_code,
+	created_at: l.created_at,
+	voided: l.voided default false
+}))]]></ee:set-variable>
+										<ee:set-variable variableName="pagingDone"><![CDATA[%dw 2.0
+output application/java
+fun epochOf(s) = if ((s is String) and (sizeOf(s) >= 19)) (((s[0 to 18] ++ "Z") as DateTime) as Number {unit: "seconds"}) else 0
+var rows = vars.drxPage.shipments default []
+var stopId = max([vars.baseline as Number, (vars.highWater as Number) - 100])
+var lookbackS = (now() as Number {unit: "seconds"}) - ((vars.sweep.lookbackHours as Number) * 3600)
+---
+isEmpty(rows)
+	or ((min(rows map ($.id as Number)) default 0) <= stopId)
+	or ((min(rows map epochOf($.created_at)) default 0) < lookbackS)]]></ee:set-variable>
+										<ee:set-variable variableName="drxPage"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+									</ee:variables>
+								</ee:transform>
+								<error-handler>
+									<on-error-continue enableNotifications="true" logException="false" doc:name="List Failed" doc:id="91c83fe8-f724-4ef0-99d8-e3746d571d1c">
+										<logger level="ERROR" doc:name="Log List Failed" doc:id="54a359f2-56db-4cb5-a21a-5b972adb8b5a" message='#[output application/json --- {"Event": "LABEL SWEEP", "messages": "Cannot read DRX shipping labels", "page": vars.pageIndex, "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""), "httpStatus": error.errorMessage.attributes.statusCode default null}]' />
+										<set-variable variableName="pagingDone" value="#[true]" doc:name="Stop Paging" doc:id="40b23e45-1a46-4533-89f3-2aff53d6dc9a" />
+										<set-variable variableName="listFailed" value="#[true]" doc:name="List Failed" doc:id="cf8bc657-8d1b-4b90-ba97-0120d65ee87b" />
+									</on-error-continue>
+								</error-handler>
+							</try>
+						</when>
+					</choice>
+				</foreach>
+				<ee:transform doc:name="Candidates" doc:id="0f16dd64-4f28-4d1c-901e-04b57d583d2b">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable variableName="candidateInfo"><![CDATA[%dw 2.0
+output application/java
+fun epochOf(s) = if ((s is String) and (sizeOf(s) >= 19)) (((s[0 to 18] ++ "Z") as DateTime) as Number {unit: "seconds"}) else 0
+var settleS = (now() as Number {unit: "seconds"}) - ((vars.sweep.settleMinutes as Number) * 60)
+// DEV only: test labels from config, routed through the real DRX lookups and the real partner call
+var fixtures = if (vars.sweep.fixture) read(p('labelSweep.fixtureLabels'), "application/json") else []
+var all = (vars.realLabels ++ fixtures) distinctBy ($.id)
+var eligible = (all filter ((l) -> ((l.id as Number) > (vars.baseline as Number))
+	and !(l.voided default false)
+	and !(isEmpty(l.tracking_number))
+	and (epochOf(l.created_at) <= settleS))) orderBy ($.id as Number)
+var capped = if (sizeOf(eligible) > vars.sweep.maxLabels) eligible[0 to (vars.sweep.maxLabels - 1)] else eligible
+var fixtureIds = fixtures map ($.id as Number)
+var olderReal = (vars.realLabels filter (epochOf($.created_at) <= settleS)) map ($.id as Number)
+var cappedReal = (capped map ($.id as Number)) filter ((i) -> !(fixtureIds contains i))
+---
+{
+	read: sizeOf(vars.realLabels),
+	fixtures: sizeOf(fixtures),
+	eligible: sizeOf(eligible),
+	candidates: capped,
+	// next run pages back to this id (minus a margin); when capped, only as far as this run got
+	highWater: if (sizeOf(eligible) > vars.sweep.maxLabels) (max(cappedReal) default vars.highWater) else (max(olderReal) default vars.highWater)
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<choice doc:name="Any Candidates?" doc:id="2692709b-b312-4529-bbb2-7231252ae4eb">
+					<when expression="#[!(isEmpty(vars.candidateInfo.candidates))]">
+						<db:select doc:name="Labels Already Handled" doc:id="6085de07-86fa-43f5-8115-2f100e576b20" config-ref="Database_Config" target="knownRows">
+							<db:sql><![CDATA[${db.labelKnown}]]></db:sql>
+							<db:input-parameters><![CDATA[#[{"ids": (vars.candidateInfo.candidates map ($.id as String)) joinBy ","}]]]></db:input-parameters>
+						</db:select>
+						<set-variable variableName="newLabels" value="#[%dw 2.0&#10;output application/java&#10;var known = (vars.knownRows default []) map ($.label_id as Number)&#10;---&#10;vars.candidateInfo.candidates filter ((l) -&gt; !(known contains (l.id as Number)))]" doc:name="New Labels" doc:id="89325185-6737-4c66-83fc-df6f7df4132a" />
+					</when>
+				</choice>
+				<foreach doc:name="New Labels" doc:id="5cbd2114-a4f9-480b-9657-9bfe7631c7ec" collection="#[vars.newLabels]">
+					<ee:transform doc:name="Start Label" doc:id="223ce995-bd63-4144-a80c-099bff9efb7f">
+						<ee:message />
+						<ee:variables>
+							<ee:set-variable variableName="label"><![CDATA[%dw 2.0
+output application/java
+---
+payload]]></ee:set-variable>
+							<ee:set-variable variableName="shipmentNumber"><![CDATA[%dw 2.0
+output application/java
+---
+payload.id]]></ee:set-variable>
+							<ee:set-variable variableName="labelSource"><![CDATA[%dw 2.0
+output application/java
+---
+"sweep"]]></ee:set-variable>
+							<ee:set-variable variableName="labelDryRun"><![CDATA[%dw 2.0
+output application/java
+---
+vars.sweep.dryRun]]></ee:set-variable>
+							<ee:set-variable variableName="labelOutcome"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+							<ee:set-variable variableName="provider"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+							<ee:set-variable variableName="error"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+							<ee:set-variable variableName="haltFlow"><![CDATA[%dw 2.0
+output application/java
+---
+false]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+					<try doc:name="One Label" doc:id="76ca125a-49af-49da-bf6d-fc2b86474010">
+						<flow-ref doc:name="label-sweep-one-flow" doc:id="feb01be6-5b34-43ff-a7b0-3d4a3314d27d" name="label-sweep-one-flow" />
+						<error-handler>
+							<on-error-continue enableNotifications="true" logException="false" doc:name="Label Failed" doc:id="3df908ef-adb3-4c3b-a63b-274b93373111">
+								<!-- a failed send is recorded by deliver-label-flow; anything else is a DRX lookup that failed -->
+								<choice doc:name="Lookup Failed?" doc:id="a0492a68-9987-4652-acbf-6eef45d5832a">
+									<when expression="#[!(['failed', 'rejected'] contains (vars.labelOutcome default ''))]">
+										<set-variable variableName="labelOutcome" value="lookup_failed" doc:name="Outcome Lookup Failed" doc:id="7a3d5b49-8707-4d5f-94e4-d69f90c9ff44" />
+										<set-variable variableName="labelRecord" value='#[{"status": "lookup_failed", "provider": "-", "error": ((error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")) ++ " " ++ ((error.errorMessage.attributes.statusCode default "") as String), "withPayload": false}]' doc:name="Lookup Failed Record" doc:id="46a8e9b0-d3a4-4959-b022-1b8c45d2f62e" />
+										<flow-ref doc:name="label-record-flow" doc:id="bcd414a3-365b-4154-bb33-cf044bb650f3" name="label-record-flow" />
+										<logger level="WARN" doc:name="Log Lookup Failed" doc:id="727202fb-ab34-486f-869b-b4a6e135b6e8" message='#[output application/json --- {"Event": "LABEL SWEEP", "messages": "Could not read this label&#39;s fills from DRX", "shipment_id": vars.shipmentNumber, "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""), "httpStatus": error.errorMessage.attributes.statusCode default null}]' />
+									</when>
+								</choice>
+							</on-error-continue>
+						</error-handler>
+					</try>
+					<ee:transform doc:name="Count Outcome" doc:id="b961b6de-9a8b-4d02-821e-55565ebcf7cd">
+						<ee:message />
+						<ee:variables>
+							<ee:set-variable variableName="sweepCounts"><![CDATA[%dw 2.0
+output application/java
+var k = if (vars.sweepCounts[vars.labelOutcome default "unknown"] != null) (vars.labelOutcome default "unknown") else "unknown"
+---
+vars.sweepCounts mapObject ((v, key) -> { (key): if ((key as String) == k) v + 1 else v })]]></ee:set-variable>
+							<ee:set-variable variableName="drxFill"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+							<ee:set-variable variableName="drxPackingList"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+						</ee:variables>
+					</ee:transform>
+				</foreach>
+				<choice doc:name="Live?" doc:id="82073250-027c-40f2-bdce-b063a0aee745">
+					<when expression="#[!(vars.sweep.dryRun)]">
+						<!-- failed sends every retryMinutes, sends stuck for 30 minutes, and dry-run labels (backfill after going live) -->
+						<db:select doc:name="Labels To Retry" doc:id="ae40001a-2c79-4f73-bc21-7057817fe244" config-ref="Database_Config" target="retryRows">
+							<db:sql><![CDATA[${db.labelRetrySelect}]]></db:sql>
+							<db:input-parameters><![CDATA[#[{"max_attempts": p('labelSweep.maxAttempts'), "window_hours": p('labelSweep.retryWindowHours'), "retry_minutes": p('labelSweep.retryMinutes'), "backfill_hours": p('labelSweep.backfillHours')}]]]></db:input-parameters>
+						</db:select>
+						<foreach doc:name="Retries" doc:id="0cb3b855-6f74-443a-96f4-30606496b161" collection="#[vars.retryRows default []]">
+							<ee:transform doc:name="Start Retry" doc:id="7c3f68b9-d265-4c43-b350-1208f52d3c14">
+								<ee:message>
+									<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+read(payload.payload default "{}", "application/json")]]></ee:set-payload>
+								</ee:message>
+								<ee:variables>
+									<ee:set-variable variableName="provider"><![CDATA[%dw 2.0
+output application/java
+---
+payload.provider_code]]></ee:set-variable>
+									<ee:set-variable variableName="shipmentNumber"><![CDATA[%dw 2.0
+output application/java
+---
+payload.label_id]]></ee:set-variable>
+									<ee:set-variable variableName="labelSource"><![CDATA[%dw 2.0
+output application/java
+---
+"retry"]]></ee:set-variable>
+									<ee:set-variable variableName="labelDryRun"><![CDATA[%dw 2.0
+output application/java
+---
+false]]></ee:set-variable>
+									<ee:set-variable variableName="labelOutcome"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+									<ee:set-variable variableName="error"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+									<ee:set-variable variableName="haltFlow"><![CDATA[%dw 2.0
+output application/java
+---
+false]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+							<try doc:name="Retry Label" doc:id="f07d2f1c-3d60-4027-a14d-53a925145c59">
+								<flow-ref doc:name="deliver-label-flow" doc:id="1af82ed3-8b16-4b6c-97af-b47ec47aa1ff" name="deliver-label-flow" />
+								<error-handler>
+									<on-error-continue enableNotifications="true" logException="false" doc:name="Retry Failed" doc:id="1d22c4ce-4b6f-40b2-aff7-56bc28cdc117">
+										<logger level="WARN" doc:name="Log Retry Failed" doc:id="b18a5ee4-3cdf-4f7c-8244-0134a63e3846" message='#[output application/json --- {"Event": "LABEL SWEEP", "messages": "Retry did not deliver the label", "provider": vars.provider, "shipment_id": vars.shipmentNumber, "outcome": vars.labelOutcome}]' />
+									</on-error-continue>
+								</error-handler>
+							</try>
+							<ee:transform doc:name="Count Retry" doc:id="e74db9db-a630-4075-93ec-6bdb6742dfe9">
+								<ee:message />
+								<ee:variables>
+									<ee:set-variable variableName="retryCounts"><![CDATA[%dw 2.0
+output application/java
+var k = if (vars.retryCounts[vars.labelOutcome default "unknown"] != null) (vars.labelOutcome default "unknown") else "unknown"
+---
+vars.retryCounts mapObject ((v, key) -> { (key): if ((key as String) == k) v + 1 else v })]]></ee:set-variable>
+								</ee:variables>
+							</ee:transform>
+						</foreach>
+					</when>
+				</choice>
+				<choice doc:name="High Water Moved?" doc:id="d026af65-91d7-4279-a95f-9bddf2d7a22c">
+					<when expression="#[(vars.candidateInfo.highWater default 0) &gt; (vars.highWater default 0)]">
+						<db:insert doc:name="Save High Water" doc:id="114ed507-f108-4179-9044-e92b11f0150d" config-ref="Database_Config" target="stateResult">
+							<db:sql><![CDATA[${db.labelStateSet}]]></db:sql>
+							<db:input-parameters><![CDATA[#[{"name": "high_water_label_id", "value": vars.candidateInfo.highWater as String}]]]></db:input-parameters>
+						</db:insert>
+					</when>
+				</choice>
+				<logger level="INFO" doc:name="Log Sweep" doc:id="3cb75e32-4085-46eb-9296-0709aa3c02dd" message='#[output application/json --- {"Event": "LABEL SWEEP", "dryRun": vars.sweep.dryRun, "baseline": vars.baseline, "labelsRead": vars.candidateInfo.read, "testLabels": vars.candidateInfo.fixtures, "eligible": vars.candidateInfo.eligible, "new": sizeOf(vars.newLabels default []), "outcomes": vars.sweepCounts, "retries": vars.retryCounts, "drxListFailed": vars.listFailed, "seconds": (now() - vars.sweep.startedAt).seconds}]' />
+			</when>
+		</choice>
+	</sub-flow>
+	<!-- r15: one label from DRX's list: read its fills, shape it like DRX's webhook body, then route and send it -->
+	<sub-flow name="label-sweep-one-flow" doc:id="036a90eb-4288-47cc-8be1-96729941483e">
+		<choice doc:name="Fill Or Packing List?" doc:id="2fd9a77e-4eb5-405f-b301-c755ada5b670">
+			<when expression="#[vars.label.prescription_fill_id != null]">
+				<http:request method="GET" doc:name="DRX Fill" doc:id="9ffb36ae-2184-4b3d-966a-38de839389c6" config-ref="DRX_Label_Request_Config" path="/prescription-fill/{id}" target="drxFill" responseTimeout="60000">
+					<http:headers><![CDATA[#[{"X-DRX-Key": p('secure::drx.key'), "Accept": "application/json"}]]]></http:headers>
+					<http:uri-params><![CDATA[#[{"id": vars.label.prescription_fill_id as String}]]]></http:uri-params>
+				</http:request>
+				<set-variable variableName="labelFills" value="#[[vars.drxFill.fill]]" doc:name="Label Fills" doc:id="97757202-871d-453b-ae8c-1bbbf9e7a09a" />
+			</when>
+			<when expression="#[vars.label.packing_list_id != null]">
+				<!-- a box with several fills: the label names the packing list, which names the fills -->
+				<http:request method="GET" doc:name="DRX Packing List" doc:id="883b3e9a-9f38-4d42-82a3-d9b5008508b2" config-ref="DRX_Label_Request_Config" path="/packing-list/{id}" target="drxPackingList" responseTimeout="60000">
+					<http:headers><![CDATA[#[{"X-DRX-Key": p('secure::drx.key'), "Accept": "application/json"}]]]></http:headers>
+					<http:uri-params><![CDATA[#[{"id": vars.label.packing_list_id as String}]]]></http:uri-params>
+				</http:request>
+				<set-variable variableName="labelFills" value="#[(vars.drxPackingList.packing_list.packing_list_items default []) map ($.prescription_fill)]" doc:name="Label Fills" doc:id="fcd0b814-a5aa-49b0-8a21-82ec0ec55224" />
+			</when>
+			<otherwise>
+				<set-variable variableName="labelFills" value="#[[]]" doc:name="No Fills" doc:id="e43cdc17-e70b-4232-9df3-35cf4c2c2b25" />
+			</otherwise>
+		</choice>
+		<choice doc:name="Any Fills?" doc:id="84067be7-7704-4afc-880e-5874c6fb6107">
+			<when expression="#[isEmpty((vars.labelFills default []) filter (($ != null) and ($.fill != null)))]">
+				<!-- r16: DRX answers 200 {"success": false, "message": "... not found"} for a fill or packing list it cannot
+				     return; that label names fills, so it is a failed lookup (reported, tried again), not an empty label -->
+				<set-variable variableName="labelOutcome" value='#[if ((vars.label.prescription_fill_id != null) or (vars.label.packing_list_id != null)) "lookup_failed" else "no_fills"]' doc:name="Outcome No Fills" doc:id="c96c280c-a0fe-44f5-a6cb-a1818bdf6067" />
+				<set-variable variableName="labelRecord" value='#[{"status": vars.labelOutcome, "provider": "-", "error": (if (vars.labelOutcome == "lookup_failed") ("DRX: " ++ ((vars.drxFill.message default vars.drxPackingList.message default "no fills returned") as String)) else null), "withPayload": false}]' doc:name="No Fills Record" doc:id="7ac60d90-13f8-49fe-a7e8-7badf7a11a50" />
+				<flow-ref doc:name="label-record-flow" doc:id="052366eb-1bde-4444-99b2-eb20795d9979" name="label-record-flow" />
+			</when>
+			<otherwise>
+				<ee:transform doc:name="DRX Label Body" doc:id="4702c019-fec5-4a3d-a931-d3c9989c0a09">
+					<ee:message>
+						<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var l = vars.label
+---
+{
+	"shipment": {
+		"id": l.id,
+		"tracking_number": l.tracking_number,
+		"carrier_code": l.carrier_code,
+		"service_code": l.service_code
+	},
+	"fills": ((vars.labelFills default []) filter (($ != null) and ($.fill != null))) map ((pf) -> {
+		"id": pf.fill.id,
+		"prescription_id": pf.prescription.id,
+		"external_id": null,
+		"status": pf.fill.status,
+		"prescription": {
+			"id": pf.prescription.id,
+			"surescripts_erx_id": pf.prescription.surescripts_erx_id,
+			"surescripts_erx_order_number": pf.prescription.surescripts_erx_order_number
+		}
+	})
+}]]></ee:set-payload>
+					</ee:message>
+					<ee:variables>
+						<ee:set-variable variableName="labelFills"><![CDATA[%dw 2.0
+output application/java
+---
+null]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<flow-ref doc:name="create-shipment-flow" doc:id="8931fbbe-e8b7-4bb5-b7fe-87e6717854e5" name="create-shipment-flow" />
+			</otherwise>
+		</choice>
+	</sub-flow>
+	<!-- r15: daily report of partner labels (counts and label ids only), logged and emailed to labelSweep.reportTo -->
+	<flow name="label-report-daily-flow" doc:id="3fb94d14-8264-4041-8dcb-a50a85a16183" maxConcurrency="1">
+		<scheduler doc:name="Every Morning" doc:id="71cda86c-f3e0-4cd4-8bff-7c241d77b789">
+			<scheduling-strategy>
+				<cron expression="0 0 7 * * ?" timeZone="America/Chicago" />
+			</scheduling-strategy>
+		</scheduler>
+		<choice doc:name="Daily Report On?" doc:id="481dcc68-231b-4b1f-bf31-566f38df1591">
+			<when expression="#[p('labelSweep.reportDaily') == 'true']">
+				<flow-ref doc:name="label-report-flow" doc:id="edfe9a06-9c48-4bbe-a30b-41cc2c77046e" name="label-report-flow" />
+			</when>
+		</choice>
+		<error-handler>
+			<on-error-continue enableNotifications="true" logException="false" doc:name="Report Failed" doc:id="88f4e56b-c0d9-48a3-b4c4-268fd8984b40">
+				<logger level="ERROR" doc:name="Log Report Failed" doc:id="c5abcd63-31ac-4dd6-b303-9dfd40742ac6" message='#[output application/json --- {"Event": "LABEL REPORT FAILED", "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+			</on-error-continue>
+		</error-handler>
+	</flow>
+	<!-- r15: the same report once, a little after each start, so a deploy shows the report and its email work -->
+	<flow name="label-report-startup-flow" doc:id="c28e610b-1140-47ff-989d-652aa8278265" maxConcurrency="1">
+		<scheduler doc:name="After Start" doc:id="7d779e0a-34ca-400c-a9ce-95ddda8ef5e2">
+			<scheduling-strategy>
+				<fixed-frequency frequency="1440" timeUnit="MINUTES" startDelay="${labelSweep.reportStartupDelayMinutes}" />
+			</scheduling-strategy>
+		</scheduler>
+		<choice doc:name="Startup Report On?" doc:id="758601aa-f2fd-4a36-af37-2c2e361bae04">
+			<when expression="#[p('labelSweep.reportOnStartup') == 'true']">
+				<flow-ref doc:name="label-report-flow" doc:id="693fa36d-eec2-445c-99eb-03f85247e2bc" name="label-report-flow" />
+			</when>
+		</choice>
+		<error-handler>
+			<on-error-continue enableNotifications="true" logException="false" doc:name="Report Failed" doc:id="ba4663f7-8326-4a43-82a6-8c30bd78608b">
+				<logger level="ERROR" doc:name="Log Report Failed" doc:id="202d0776-c7b6-4d9d-a365-c3c90f189c05" message='#[output application/json --- {"Event": "LABEL REPORT FAILED", "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+			</on-error-continue>
+		</error-handler>
+	</flow>
+	<sub-flow name="label-report-flow" doc:id="8817c489-6c0c-46a8-a951-b636555459f8">
+		<db:select doc:name="Label Counts" doc:id="88e392d2-bca2-47cf-8f14-19d2f8ef24f9" config-ref="Database_Config" target="reportCounts">
+			<db:sql><![CDATA[${db.labelReportCounts}]]></db:sql>
+		</db:select>
+		<db:select doc:name="Labels Not Delivered" doc:id="9647ada8-5c7d-4491-82e9-25fdd1b2b27a" config-ref="Database_Config" target="reportOpen">
+			<db:sql><![CDATA[${db.labelReportOpen}]]></db:sql>
+		</db:select>
+		<ee:transform doc:name="Report Summary" doc:id="107a87eb-dba1-4ef8-99ac-4aceadca65c9">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable variableName="labelReport"><![CDATA[%dw 2.0
+output application/java
+// r16: partners left out of the report (PROD: BND, our test tenant, whose test labels go to the test endpoint)
+var hide = ((p('labelSweep.reportHidePartners') default "") splitBy ",") map trim($) filter ($ != "")
+var rows = (vars.reportCounts default []) filter !(hide contains ($.provider_code as String))
+fun total(list) = sum(list map (($.n default 0) as Number)) default 0
+var codes = ((rows filter ($.provider_code != "-")) map ($.provider_code as String)) distinctBy $ orderBy $
+var partners = codes map ((code) -> do {
+	var mine = rows filter ($.provider_code == code)
+	---
+	{
+		partner: code,
+		byWebhook: total(mine filter (($.status == "sent") and ($.source == "webhook"))),
+		bySweep: total(mine filter (($.status == "sent") and ($.source != "webhook"))),
+		wouldSend: total(mine filter ($.status == "dry_run")),
+		failing: total(mine filter (["failed", "sending"] contains $.status)),
+		rejected: total(mine filter ($.status == "rejected")),
+		noUrl: total(mine filter ($.status == "no_webhook_url"))
+	}
+})
+---
+{
+	dryRun: p('labelSweep.dryRun') == 'true',
+	partners: partners,
+	byWebhook: sum(partners map $.byWebhook) default 0,
+	bySweep: sum(partners map $.bySweep) default 0,
+	wouldSend: sum(partners map $.wouldSend) default 0,
+	failing: sum(partners map $.failing) default 0,
+	rejected: sum(partners map $.rejected) default 0,
+	otherLabels: total(rows filter (($.provider_code == "-") and ($.status == "not_partner"))),
+	noFills: total(rows filter ($.status == "no_fills")),
+	lookupFailed: total(rows filter ($.status == "lookup_failed")),
+	notDelivered: ((vars.reportOpen default []) filter !(hide contains ($.provider_code as String))) map {
+		label: $.label_id,
+		partner: $.provider_code,
+		status: $.status,
+		attempts: $.attempts,
+		since: $.created_epoch,
+		error: $.last_error
+	}
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<ee:transform doc:name="Report Email" doc:id="71e9f705-25d8-4108-bb57-2c40c635ee75">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable variableName="email"><![CDATA[%dw 2.0
+output application/json
+var r = vars.labelReport
+fun s(v) = if (v == null) "" else (v as String)
+fun esc(v) = ((s(v) replace "&" with "&amp;") replace "<" with "&lt;") replace ">" with "&gt;"
+fun ct(epoch) = if (epoch == null) "" else ((((epoch as Number) as DateTime {unit: "seconds"}) >> "America/Chicago") as String {format: "MMM d, h:mm a"})
+var cell = "style='padding:4px 10px;border-bottom:1px solid #ddd;text-align:left'"
+fun row(values) = "<tr>" ++ ((values map ("<td " ++ cell ++ ">" ++ esc($) ++ "</td>")) joinBy "") ++ "</tr>"
+fun head(values) = "<tr>" ++ ((values map ("<th " ++ cell ++ ">" ++ $ ++ "</th>")) joinBy "") ++ "</tr>"
+var delivered = r.byWebhook + r.bySweep
+var open = r.failing + r.rejected
+var subject = s(p('labelSweep.reportSubjectPrefix')) ++ "Shipping labels, last 24 hours: " ++ s(delivered) ++ " delivered"
+	++ (if (open > 0) ", " ++ s(open) ++ " not delivered" else "")
+	++ (if (r.dryRun) " (sweep in dry run, " ++ s(r.wouldSend) ++ " it would send)" else "")
+var partnerTable = if (isEmpty(r.partners)) "<p>No partner labels in the last 24 hours.</p>"
+	else "<table style='border-collapse:collapse'>"
+		++ head(["Partner", "Sent by DRX&#39;s webhook", "Sent by the sweep", (if (r.dryRun) "Sweep would send" else ""), "Failing", "Rejected by partner"] filter ($ != ""))
+		++ ((r.partners map row([$.partner, $.byWebhook, $.bySweep] ++ (if (r.dryRun) [$.wouldSend] else []) ++ [$.failing, $.rejected])) joinBy "")
+		++ "</table>"
+var openTable = if (isEmpty(r.notDelivered)) "<p>Nothing is waiting: every partner label from the last 3 days was delivered.</p>"
+	else "<p><b>Not delivered (last 3 days):</b></p><table style='border-collapse:collapse'>"
+		++ head(["DRX label", "Partner", "Status", "Tries", "First seen (Central)", "Last error"])
+		++ ((r.notDelivered map row([$.label, $.partner, $.status, $.attempts, ct($.since), $.error])) joinBy "")
+		++ "</table>"
+var content = "<html><body style='font-family:Segoe UI,Arial,sans-serif;font-size:14px;color:#222'>"
+	++ "<p>Partner shipping labels in the last 24 hours" ++ (if (r.dryRun) " (the sweep is in <b>dry run</b>: it records what it would send and sends nothing)" else "") ++ ":</p>"
+	++ "<ul><li><b>" ++ s(delivered) ++ "</b> delivered: " ++ s(r.byWebhook) ++ " by DRX&#39;s webhook, " ++ s(r.bySweep) ++ " by the sweep</li>"
+	++ (if (r.dryRun) "<li><b>" ++ s(r.wouldSend) ++ "</b> the sweep would have sent (DRX&#39;s webhook never fired for them)</li>" else "")
+	++ "<li><b>" ++ s(r.failing) ++ "</b> failing (retried every " ++ s(p('labelSweep.retryMinutes')) ++ " minutes), <b>" ++ s(r.rejected) ++ "</b> rejected by the partner</li>"
+	++ "<li>" ++ s(r.otherLabels) ++ " other labels checked (not a partner order), " ++ s(r.noFills) ++ " with no fills, " ++ s(r.lookupFailed) ++ " that could not be read from DRX</li></ul>"
+	++ partnerTable ++ openTable
+	++ "<p style='color:#666;font-size:12px'>From the MuleSoft provider API label sweep. Counts and DRX label ids only.</p></body></html>"
+---
+{
+	message: {
+		subject: subject,
+		body: {
+			contentType: "HTML",
+			content: content
+		},
+		toRecipients: (s(p('labelSweep.reportTo')) splitBy ",") map {
+			emailAddress: {
+				address: trim($)
+			}
+		}
+	},
+	saveToSentItems: true
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<logger level="INFO" doc:name="Log Report" doc:id="48820653-b360-4262-b6f6-2ba334fc5f5f" message='#[output application/json --- {"Event": "LABEL REPORT", "dryRun": vars.labelReport.dryRun, "sentByWebhook": vars.labelReport.byWebhook, "sentBySweep": vars.labelReport.bySweep, "wouldSend": vars.labelReport.wouldSend, "failing": vars.labelReport.failing, "rejected": vars.labelReport.rejected, "otherLabels": vars.labelReport.otherLabels, "notDelivered": vars.labelReport.notDelivered map {label: $.label, partner: $.partner, status: $.status}}]' />
+		<choice doc:name="Email Report?" doc:id="2646f75a-049a-44c9-baaa-e3366b241dcd">
+			<when expression="#[p('labelSweep.reportEmail') == 'true']">
+				<try doc:name="Email" doc:id="6056ffc2-db39-4842-b74f-eec536ebfcb7">
+					<flow-ref doc:name="label-report-email-flow" doc:id="55e337be-9cb4-4f78-9ba6-325f7839a858" name="label-report-email-flow" />
+					<logger level="INFO" doc:name="Log Emailed" doc:id="de4764d8-eb68-48e4-9941-2020ce4b8cbf" message='#[output application/json --- {"Event": "LABEL REPORT", "messages": "Report emailed", "via": "graph", "to": p("labelSweep.reportTo")}]' />
+					<error-handler>
+						<on-error-continue enableNotifications="true" logException="false" doc:name="Email Failed" doc:id="140a39b9-6b0e-42f1-83e7-437d6b869b54">
+							<logger level="WARN" doc:name="Log Email Failed" doc:id="40ce5850-9fbf-4a50-a277-4e89cf653428" message='#[output application/json --- {"Event": "LABEL REPORT", "messages": "Report email failed", "step": vars.emailStep default null, "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default ""), "httpStatus": error.errorMessage.attributes.statusCode default null}]' />
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</when>
+		</choice>
+	</sub-flow>
+	<!-- r18: the report email goes straight to Microsoft Graph with a new token every time, using the connector's app login
+	     and sender (outlook.*). The Outlook 365 connector (1.3.1, common-email-flow) keeps the first token it gets and
+	     renews it only on the expiry messages it knows; Graph now answers "Invalid token lifetime.", so every email after
+	     the token's first hour failed with OUTLOOK365:INVALID_CREDENTIALS (the first daily report, 2026-09-29 7:00 AM CT). -->
+	<sub-flow name="label-report-email-flow" doc:id="f4822bf2-0f2f-40ea-a100-9140128942f4">
+		<set-variable variableName="emailStep" value="token" doc:name="Step Token" doc:id="c7fda1d3-7b5d-430a-9be4-6857fa552612" />
+		<http:request method="POST" doc:name="Graph Token" doc:id="384955da-591d-4119-8099-54bb4d4c02e9" url="${outlook.tokenUrl}" target="graphToken" responseTimeout="30000">
+			<http:body><![CDATA[#[output application/x-www-form-urlencoded --- {"grant_type": "client_credentials", "client_id": p('secure::outlook.clientId'), "client_secret": p('secure::outlook.clientSecret'), "scope": p('outlook.scopes')}]]]></http:body>
+		</http:request>
+		<set-variable variableName="emailStep" value="send" doc:name="Step Send" doc:id="3f3adc0f-c8b5-46ce-8c18-279eac11d8a9" />
+		<http:request method="POST" doc:name="Graph Send Mail" doc:id="70541342-ecbb-429e-8548-9be30bb31c65" url="#[p('outlook.baseUrl') ++ '/users/' ++ p('outlook.fromAddress') ++ '/sendMail']" target="graphSend" responseTimeout="30000">
+			<http:body><![CDATA[#[vars.email]]]></http:body>
+			<http:headers><![CDATA[#[{"Authorization": "Bearer " ++ (vars.graphToken.access_token default "")}]]]></http:headers>
+		</http:request>
+		<remove-variable variableName="graphToken" doc:name="Forget Token" doc:id="459a5580-f33c-4862-9127-4a951b99d5b8" />
+	</sub-flow>
+	<!-- r16: test endpoint. BND, our internal test tenant, has its webhook pointed here in DEV and PROD, so tests prove
+	     delivery end to end (routing, auth headers, the call out and back in) without an outside service. It accepts only
+	     BND's own webhook login, stores what it receives with secret header values masked, and deletes rows older than
+	     testCatcher.retentionDays. Anything else gets 404. API Manager policies do not cover this listener; it checks the
+	     login itself. -->
+	<flow name="test-catcher-flow" doc:id="3220a561-2c7c-4dcd-8a20-9682b0f3e604" maxConcurrency="4">
+		<http:listener doc:name="Test Catcher" doc:id="c2881f10-4244-4292-b597-7c24c813cc93" config-ref="drx-provider-api-httpListenerConfig" path="/test-catcher/*" allowedMethods="POST">
+			<http:response statusCode="#[vars.catcherStatus default 200]" />
+			<http:error-response statusCode="#[vars.catcherStatus default 500]" />
+		</http:listener>
+		<choice doc:name="BND's Login?" doc:id="0ba781f1-22f5-43fc-9111-89472154b081">
+			<when expression="#[(p('testCatcher.enabled') == 'true') and !(isEmpty(p('secure::bnd.clientSecret'))) and ((attributes.headers.clientsecret default '') == p('secure::bnd.clientSecret'))]">
+				<try doc:name="Store" doc:id="8da9fb2e-7de8-42b4-bd3b-3158baf8e01b">
+					<db:insert doc:name="Store Request" doc:id="ae87e61a-24f8-4d45-b3c1-04b1c39c65d9" config-ref="Database_Config" target="catcherInsert">
+						<db:sql><![CDATA[${db.testCatcherInsert}]]></db:sql>
+						<db:input-parameters><![CDATA[#[%dw 2.0
+output application/java
+var masked = attributes.headers mapObject ((v, k) -> { (k): if ((k as String) matches /(?i).*(secret|authorization|token|password|key|cookie).*/) "<masked>" else v })
+---
+{
+	"path": attributes.requestPath ++ (if (isEmpty(attributes.queryString)) "" else ("?" ++ attributes.queryString)),
+	"headers": write(masked, "application/json", {indent: false}),
+	"body": if (payload == null) "" else write(payload, "application/json", {indent: false})
+}]]]></db:input-parameters>
+					</db:insert>
+					<db:delete doc:name="Delete Old" doc:id="d2f8253a-dc20-414b-a07d-f3022ac432a8" config-ref="Database_Config" target="catcherCleanup">
+						<db:sql><![CDATA[${db.testCatcherCleanup}]]></db:sql>
+						<db:input-parameters><![CDATA[#[{"days": p('testCatcher.retentionDays')}]]]></db:input-parameters>
+					</db:delete>
+					<set-variable variableName="catcherStatus" value="#[200]" doc:name="Status 200" doc:id="cc727db1-91cb-4fc7-8525-b4d5a32e12d0" />
+					<set-payload value='#[output application/json --- {"received": true}]' doc:name="Received" doc:id="7d60456e-d6b5-49f2-bd5a-ee71f09a75d5" />
+					<error-handler>
+						<on-error-continue enableNotifications="true" logException="false" doc:name="Store Failed" doc:id="3ad2b1d8-5a19-4cf4-9d24-cbc9d9c2a198">
+							<logger level="WARN" doc:name="Log Store Failed" doc:id="40ed3fe0-ea32-4598-9eef-287ea402a536" message='#[output application/json --- {"messages": "Test endpoint could not store the request", "errorType": (error.errorType.namespace default "") ++ ":" ++ (error.errorType.identifier default "")}]' />
+							<set-variable variableName="catcherStatus" value="#[503]" doc:name="Status 503" doc:id="d7cbcef7-d757-4c58-8b4e-a3e49b47b080" />
+							<set-payload value='#[output application/json --- {"received": false}]' doc:name="Not Stored" doc:id="539a351f-08cb-441d-bc3c-ce09ce93f665" />
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</when>
+			<otherwise>
+				<set-variable variableName="catcherStatus" value="#[404]" doc:name="Status 404" doc:id="b5717831-50c1-4fbd-938e-4993db99b669" />
+				<set-payload value='#[output application/json --- {"message": "Not found"}]' doc:name="Not Found" doc:id="8cc431f3-b9f7-44a2-b390-5855b5de80c9" />
+			</otherwise>
+		</choice>
+	</flow>
+</mule>

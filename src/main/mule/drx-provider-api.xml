@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd ">
+    <flow name="drx-provider-api-main">
+        <http:listener config-ref="drx-provider-api-httpListenerConfig" path="${http.listener.path}">
+            <http:response statusCode="#[vars.httpStatus default 200]">
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:response>
+            <http:error-response statusCode="#[vars.httpStatus default 500]">
+                <http:body><![CDATA[#[payload]]]></http:body>
+                <http:headers><![CDATA[#[vars.outboundHeaders default {}]]]></http:headers>
+            </http:error-response>
+        </http:listener>
+        <ee:transform doc:name="Initiative Variables" doc:id="e1f409cb-83cc-471d-acc0-c2283b5975b0">
+            <ee:message />
+            <ee:variables>
+                <ee:set-variable variableName="correlationId"><![CDATA[%dw 2.0
+output application/json
+---
+correlationId]]></ee:set-variable>
+                <ee:set-variable variableName="startTime"><![CDATA[%dw 2.0
+output application/json
+---
+now()]]></ee:set-variable>
+                <ee:set-variable variableName="path"><![CDATA[%dw 2.0
+output application/json
+---
+attributes.requestPath]]></ee:set-variable>
+                <ee:set-variable variableName="method"><![CDATA[%dw 2.0
+output application/json
+---
+attributes.method]]></ee:set-variable>
+                <ee:set-variable variableName="appName"><![CDATA[%dw 2.0
+output application/json
+---
+app.name]]></ee:set-variable>
+            </ee:variables>
+        </ee:transform>
+        <logger level="INFO" doc:name="Start Logger" doc:id="df2bd92d-ab91-447e-b2b7-c120f220af16" message="#[%dw 2.0&#xA;output application/json&#xA;---&#xA;{&#xA; &quot;Event&quot;: &quot;START&quot;,&#xA; &quot;CorrelationId&quot;: vars.correlationId,&#xA; &quot;Application&quot;: vars.appName,&#xA; &quot;Method&quot;: vars.method,&#xA; &quot;Path&quot;: vars.path,&#xA; &quot;Provider&quot;: vars.provider default &quot;N/A&quot;,&#xA; &quot;Timestamp&quot;: vars.startTime&#xA;}]" />
+        <apikit:router config-ref="drx-provider-api-config" />
+        <logger level="INFO" doc:name="End Logger" doc:id="4160c37d-2238-42ef-8cba-bd690bda1135" message="#[%dw 2.0&#xA;output application/json&#xA;---&#xA;{&#xA; &quot;Event&quot;: &quot;END&quot;,&#xA; &quot;CorrelationId&quot;: vars.correlationId,&#xA; &quot;Application&quot;: vars.appName,&#xA; &quot;Method&quot;: vars.method,&#xA; &quot;Path&quot;: vars.path,&#xA; &quot;Provider&quot;: vars.provider default &quot;N/A&quot;,&#xA; &quot;ProcessingTime(s)&quot;: (now() - vars.startTime).seconds,&#xA; &quot;Timestamp&quot;: now()&#xA;}]" />
+        <error-handler>
+            <on-error-propagate type="APIKIT:BAD_REQUEST">
+                <ee:transform doc:name="Create Error Payload">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Bad request"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">400</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:NOT_FOUND">
+                <ee:transform doc:name="Create Error Payload">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Resource not found"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">404</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:METHOD_NOT_ALLOWED">
+                <ee:transform doc:name="Transform Message">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Method not allowed"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">405</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:NOT_ACCEPTABLE">
+                <ee:transform doc:name="Create Error Payload">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Not acceptable"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">406</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:UNSUPPORTED_MEDIA_TYPE">
+                <ee:transform doc:name="Create Error Payload">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Unsupported media type"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">415</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+            <on-error-propagate type="APIKIT:NOT_IMPLEMENTED">
+                <ee:transform doc:name="Create Error Payload">
+                    <ee:message>
+                        <ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{message: "Not Implemented"}]]></ee:set-payload>
+                    </ee:message>
+                    <ee:variables>
+                        <ee:set-variable variableName="httpStatus">501</ee:set-variable>
+                    </ee:variables>
+                </ee:transform>
+            </on-error-propagate>
+        </error-handler>
+    </flow>
+    <flow name="post:\prescription-fills:application\json:drx-provider-api-config">
+        <ee:transform doc:name="Set Request Variable" doc:id="e213f874-4ce2-4444-a839-814bb1275999">
+            <ee:message />
+            <ee:variables>
+                <ee:set-variable resource="dwl/common-request.dwl" variableName="actualRequest" />
+				<ee:set-variable resource="dwl/connection.dwl" variableName="connectionDetails" />
+            </ee:variables>
+        </ee:transform>
+        <logger level="DEBUG" doc:name="Debug Logger Payload" doc:id="7a4438c8-5da1-4059-a106-42efff630f86" message="#[%dw 2.0&#xA;output application/json&#xA;---&#xA;{&#xA; &quot;flowName&quot;: vars.actualRequest.flowName,&#xA; &quot;fill_id&quot;: payload.id,&#xA; &quot;status&quot;: payload.status,&#xA; &quot;shipment_id&quot;: payload.shipment.id&#xA;}]" category="com.boudreaux.drx.integration.payload" />
+        <flow-ref doc:name="create-prescription-fill-status-flow" doc:id="1f58d1fa-a7cc-491c-90e7-7822b22b9060" name="create-prescription-fill-status-flow" />
+        <set-payload value="#[%dw 2.0&#xA;output application/json&#xA;---&#xA;payload]" doc:name="Output Payload" doc:id="11f890d8-2bcd-46bd-b395-ad31f30aee9c" />
+        <error-handler ref="global-error-handler" />
+    </flow>
+    <flow name="post:\shipments:application\json:drx-provider-api-config">
+        <ee:transform doc:name="Set Request Variable" doc:id="1715b5ef-3f47-4d41-994f-a85c215a86a8">
+			<ee:message />
+			<ee:variables>
+				<ee:set-variable resource="dwl/common-request.dwl" variableName="actualRequest" />
+				<ee:set-variable resource="dwl/connection.dwl" variableName="connectionDetails" />
+			</ee:variables>
+		</ee:transform>
+		<logger level="DEBUG" doc:name="Debug Logger Payload" doc:id="3e4c6f6e-ca81-4480-ad73-7a42b1789f6b" message="#[%dw 2.0&#xA;output application/json&#xA;---&#xA;{&#xA; &quot;flowName&quot;: vars.actualRequest.flowName,&#xA; &quot;fill_id&quot;: payload.id,&#xA; &quot;status&quot;: payload.status,&#xA; &quot;shipment_id&quot;: payload.shipment.id&#xA;}]" category="com.boudreaux.drx.integration.payload" />
+        <flow-ref doc:name="create-shipment-flow" doc:id="97f34184-04f3-44fe-ac0a-895c66da4435" name="create-shipment-flow" />
+        <set-payload value="#[%dw 2.0&#xA;output application/json&#xA;---&#xA;payload]" doc:name="Output Payload" doc:id="2b13f36f-1803-47e2-899d-831bb181fcf0" />
+		<error-handler ref="global-error-handler" />
+    </flow>
+</mule>

@@ -1,0 +1,118 @@
+# Autodiscovery Id
+api:
+    id: "21185652"
+    
+#Any Point MQ
+anypoint:
+ mq:
+  url: "https://mq-us-east-1.anypoint.mulesoft.com/api/v1/organizations/dcaf5f94-cb8a-4545-a03d-7b50bd05e8f9/environments/4f475fec-fa87-4c86-bb41-14ba2b3eece8"
+  retryQueue: "drx-provider-post-retry-queue"
+  
+# Outlook
+outlook:
+  toRecipients: "cdowling@bndsrx.com"
+  
+#Database
+db:
+ url: "jdbc:postgresql://mulesoft-integration-db.cenq040sejtv.us-east-1.rds.amazonaws.com:5432/mulesoft" 
+ driverClassName: "org.postgresql.Driver" 
+ user: "mulesoft_integration" 
+ searchWithDRXId: "SELECT * FROM PROVIDER_DRX_ENTITY_MAPPING WHERE drx_id = :drx_id AND entity = :entity"
+ searchWithDRXIds: "SELECT * FROM PROVIDER_DRX_ENTITY_MAPPING WHERE drx_id In ('"
+ recordPartnerPrescription: "INSERT INTO PROVIDER_DRX_ENTITY_MAPPING (external_id, provider_external_id, provider, provider_code, provider_id, entity, drx_id) SELECT :external_id, :provider_external_id, :provider, :provider_code, :provider_id, 'prescription', :drx_id WHERE NOT EXISTS (SELECT 1 FROM PROVIDER_DRX_ENTITY_MAPPING WHERE drx_id = :drx_id_check AND entity = 'prescription') ON CONFLICT (external_id) DO NOTHING"
+ searchWithDRXIdList: "SELECT * FROM PROVIDER_DRX_ENTITY_MAPPING WHERE entity = :entity AND drx_id = ANY(string_to_array(:drx_ids, ','))"
+ labelDeliveryDdl: "CREATE TABLE IF NOT EXISTS PROVIDER_LABEL_DELIVERY (label_id BIGINT NOT NULL, provider_code VARCHAR(10) NOT NULL, status VARCHAR(20) NOT NULL, source VARCHAR(10) NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, http_status INTEGER, last_error VARCHAR(300), payload TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(), sent_at TIMESTAMPTZ, PRIMARY KEY (label_id, provider_code))"
+ labelStateDdl: "CREATE TABLE IF NOT EXISTS PROVIDER_LABEL_SWEEP_STATE (name VARCHAR(50) PRIMARY KEY, value VARCHAR(200), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+ labelClaim: "INSERT INTO PROVIDER_LABEL_DELIVERY AS d (label_id, provider_code, status, source, attempts, payload) VALUES (CAST(:label_id AS BIGINT), :provider_code, 'sending', :source, 1, :payload) ON CONFLICT (label_id, provider_code) DO UPDATE SET status = 'sending', source = EXCLUDED.source, attempts = d.attempts + 1, payload = COALESCE(EXCLUDED.payload, d.payload), updated_at = now() WHERE d.status NOT IN ('sent', 'sending') OR (d.status = 'sending' AND d.updated_at < now() - interval '30 minutes')"
+ labelMark: "UPDATE PROVIDER_LABEL_DELIVERY SET status = :status, http_status = CAST(:http_status AS INTEGER), last_error = :last_error, sent_at = CASE WHEN :sent = 'yes' THEN now() ELSE sent_at END, updated_at = now() WHERE label_id = CAST(:label_id AS BIGINT) AND provider_code = :provider_code"
+ labelRecord: "INSERT INTO PROVIDER_LABEL_DELIVERY AS d (label_id, provider_code, status, source, attempts, payload, last_error) VALUES (CAST(:label_id AS BIGINT), :provider_code, :status, :source, 1, :payload, :last_error) ON CONFLICT (label_id, provider_code) DO UPDATE SET status = EXCLUDED.status, source = EXCLUDED.source, attempts = d.attempts + 1, payload = COALESCE(EXCLUDED.payload, d.payload), last_error = EXCLUDED.last_error, updated_at = now() WHERE d.status NOT IN ('sent', 'sending')"
+ labelKnown: "SELECT label_id FROM PROVIDER_LABEL_DELIVERY WHERE label_id = ANY(CAST(string_to_array(:ids, ',') AS BIGINT[])) AND NOT (status = 'lookup_failed' AND attempts < 4 AND updated_at < now() - interval '10 minutes')"
+ labelRetrySelect: "SELECT label_id, provider_code, status, attempts, payload FROM PROVIDER_LABEL_DELIVERY WHERE provider_code <> '-' AND payload IS NOT NULL AND attempts < CAST(:max_attempts AS INTEGER) AND created_at > now() - CAST(:window_hours || ' hours' AS INTERVAL) AND ((status = 'failed' AND updated_at < now() - CAST(:retry_minutes || ' minutes' AS INTERVAL)) OR (status = 'sending' AND updated_at < now() - interval '30 minutes') OR (status = 'dry_run' AND created_at > now() - CAST(:backfill_hours || ' hours' AS INTERVAL))) ORDER BY created_at LIMIT 50"
+ labelStateGet: "SELECT name, value FROM PROVIDER_LABEL_SWEEP_STATE"
+ labelStateSet: "INSERT INTO PROVIDER_LABEL_SWEEP_STATE (name, value) VALUES (:name, :value) ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, updated_at = now()"
+ labelReportCounts: "SELECT provider_code, status, source, COUNT(*) AS n FROM PROVIDER_LABEL_DELIVERY WHERE created_at > now() - interval '24 hours' GROUP BY provider_code, status, source ORDER BY provider_code, status, source"
+ labelReportOpen: "SELECT label_id, provider_code, status, attempts, http_status, last_error, CAST(EXTRACT(EPOCH FROM created_at) AS BIGINT) AS created_epoch FROM PROVIDER_LABEL_DELIVERY WHERE status IN ('failed', 'rejected', 'sending', 'lookup_failed') AND created_at > now() - interval '72 hours' ORDER BY created_at DESC LIMIT 100"
+ testCatcherDdl: "CREATE TABLE IF NOT EXISTS PROVIDER_TEST_CATCHER (id BIGSERIAL PRIMARY KEY, received_at TIMESTAMPTZ NOT NULL DEFAULT now(), path VARCHAR(300), headers TEXT, body TEXT)"
+ testCatcherInsert: "INSERT INTO PROVIDER_TEST_CATCHER (path, headers, body) VALUES (:path, :headers, :body)"
+ testCatcherCleanup: "DELETE FROM PROVIDER_TEST_CATCHER WHERE received_at < now() - CAST(:days || ' days' AS INTERVAL)"
+
+# r15: label sweep (PROD starts in dry run; to go live set the Runtime Manager property labelSweep.dryRun=false)
+labelSweep:
+  enabled: "true"
+  dryRun: "true"
+  reportDaily: "true"
+  reportOnStartup: "true"
+  reportEmail: "true"
+  reportSubjectPrefix: ""
+  startDelayMinutes: "3"
+  reportStartupDelayMinutes: "20"
+  reportHidePartners: "BND"
+  fixtureLabels: ""
+  drx:
+    host: "boudreaux.drxapp.com"
+
+# r16: test endpoint for BND, our test tenant
+testCatcher:
+  enabled: "true"
+  
+#Providers  
+wsy:
+  url: "https://services.careconnect.prd.wellsync.io/v1/webhook/pharmacy/boudreaux"
+lum:
+  url: "https://api.lumimeds.com/api/pharmacy/boudreaux/webhook"
+amb:
+  url: "https://bask.health/api/webhook/pharmacy-fulfillment?pharmacyId=262953"
+arc:
+  url: ""
+ash:
+  url: ""
+bsk:
+  url: "https://bask.health/api/webhook/pharmacy-fulfillment?pharmacyId=262953"
+bge:
+  url: "https://us-central1-onlyscripts-1752528969.cloudfunctions.net/boudreauxDrxWebhook"
+bom:
+  url: "https://services.careconnect.prd.wellsync.io/v1/webhook/pharmacy/boudreaux"
+bnd:
+  url: "https://drx-provider-api-hozphu.sehsio.usa-e2.cloudhub.io/test-catcher/bnd"
+crv:
+  url: ""
+edn:
+  url: "https://admin.eden.health/api/webhooks/boudreaux"
+eng:
+  url: ""
+fdm:
+  url: ""
+mpr:
+  url: ""
+mch:
+  url: ""
+msg:
+  url: ""
+nov:
+  url: ""
+ons:
+  url: "https://us-central1-onlyscripts-1752528969.cloudfunctions.net/boudreauxDrxWebhook"
+ord:
+  url: ""
+pmd:
+  url: "https://www.preventivemd.com/api/pharmacy/drx/webhook"
+scs:
+  url: ""
+shn:
+  url: "https://webhooks.fulfillment.shinerx.com/boudreaux"
+svg:
+  url: ""
+tlg:
+  url: "https://ctrl-rest.telegramd.com/api/v1/webhook/pharmacy/f699859530"
+trt:
+  url: ""
+vit:
+  url: ""
+wlm:
+  url: "https://adminapi.welliemd.com/api/v1/webhooks/drx/{event}"
+mhi:
+  url: "https://flow.zoho.com/689592716/flow/webhook/incoming"
+ovh:
+  url: ""
+gim:
+  url: "https://bask.health/api/webhook/pharmacy-fulfillment?pharmacyId=262953"

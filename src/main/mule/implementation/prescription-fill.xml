@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core" xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd">
+	<sub-flow name="create-prescription-fill-status-flow" doc:id="d29eda92-ffa4-4b37-b992-88a775af8103" >
+		<!-- DRX sends every store event. The partner is the CODE: prefix the pharmacy API wrote into the order,
+		     which DRX carries on the fill's external_id or the prescription's surescripts_erx_id / surescripts_erx_order_number. -->
+		<ee:transform doc:name="Resolve Partner" doc:id="3f0b6a1e-2c4d-4e8a-9b1f-7d2e5c6a8b01" >
+			<ee:message />
+			<ee:variables >
+				<ee:set-variable variableName="routing" ><![CDATA[%dw 2.0
+import * from dw::core::Strings
+output application/json
+var codes = keysOf(vars.connectionDetails default {}) map ($ as String)
+var refs = [payload.external_id, payload.prescription.surescripts_erx_id, payload.prescription.surescripts_erx_order_number]
+	filter ((r) -> if (r is String) ((r contains ":") and (codes contains substringBefore(r, ":"))) else false)
+---
+{
+	code: if (isEmpty(refs)) "" else substringBefore(refs[0], ":"),
+	ref: if (isEmpty(refs)) null else substringAfter(refs[0], ":"),
+	source: if (isEmpty(refs)) null else "prefix",
+	prescriptionId: payload.prescription_id default payload.prescription.id
+}]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<!-- DRX leaves the fill's own external_id blank on API orders, so shipping labels cannot be routed by prefix.
+		     Record which partner owns this prescription; labels then route by prescription id through the mapping table.
+		     Best effort: a database problem never blocks the status update.
+		     One row per prescription: a partner order can hold several prescriptions, so the row key carries the prescription id. -->
+		<choice doc:name="Record partner prescription?" doc:id="6b1e4c2a-9d3f-4a7e-8c55-2f0d1e9a7b31" >
+			<when expression="#[(vars.routing.source == 'prefix') and (vars.routing.prescriptionId != null)]">
+				<try doc:name="Record Partner Prescription" doc:id="1c7d9e3b-5a2f-4b6e-9d08-3e4f5a6b7c82" >
+					<db:insert doc:name="Insert Partner Prescription" doc:id="8e2a4c6d-1f3b-4d5e-a7c9-0b1d2e3f4a56" config-ref="Database_Config" target="recordPartnerResult">
+						<db:sql ><![CDATA[${db.recordPartnerPrescription}]]></db:sql>
+						<db:input-parameters ><![CDATA[#[%dw 2.0
+output application/java
+---
+{
+	external_id: vars.routing.code ++ ":" ++ (vars.routing.ref default "") ++ "#" ++ (vars.routing.prescriptionId as String),
+	provider_external_id: vars.routing.ref default "",
+	provider: vars.connectionDetails[vars.routing.code].provider default vars.routing.code,
+	provider_code: vars.routing.code,
+	provider_id: vars.routing.code,
+	drx_id: vars.routing.prescriptionId as String,
+	drx_id_check: vars.routing.prescriptionId as String
+}]]]></db:input-parameters>
+					</db:insert>
+					<error-handler >
+						<on-error-continue enableNotifications="false" logException="false" doc:name="Recording is best effort" doc:id="4f6a8b0c-2d4e-4f7a-9b1c-3d5e7f9a1b24" >
+							<logger level="WARN" doc:name="Could Not Record" doc:id="9a1b3c5d-7e9f-4a2b-8c4d-6e8f0a2b4c68" message='#["Could not record partner prescription " ++ ((vars.routing.prescriptionId default "") as String) ++ ": " ++ (error.description default "")]' />
+						</on-error-continue>
+					</error-handler>
+				</try>
+			</when>
+		</choice>
+		<choice doc:name="Prefix found?" doc:id="329983d0-c57a-47cd-91bf-2f4cebdc415a" >
+			<when expression="#[isEmpty(vars.routing.code) and (vars.routing.prescriptionId != null)]">
+				<!-- Orders created through POST /prescriptions have no prefix in DRX; the pharmacy API records them in the mapping table -->
+				<ee:transform doc:name="Set Prescription Search Request" doc:id="cf7a3692-2a99-450a-9ceb-98b7b25752e0">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable variableName="dbSearch"><![CDATA[%dw 2.0
+output application/json
+---
+{
+	query: p('db.searchWithDRXId'),
+	inputParameters: {
+		"drx_id": (vars.routing.prescriptionId as String),
+		"entity": p('prescription')
+	}
+}]]></ee:set-variable>
+						<ee:set-variable variableName="action"><![CDATA[%dw 2.0
+output application/json
+---
+p('retrieve')]]></ee:set-variable>
+						<ee:set-variable variableName="entity"><![CDATA[%dw 2.0
+output application/json
+---
+p('prescription')
+]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<flow-ref doc:name="common-db-search-flow" doc:id="e2a3a532-2d9e-4131-9982-7a1a16244bb5" name="common-db-search-flow" target="dbSearchResponse"/>
+				<ee:transform doc:name="Partner From Mapping Table" doc:id="10841616-7f12-4eb2-a273-6666868df365">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable variableName="routing"><![CDATA[%dw 2.0
+import * from dw::core::Strings
+output application/json
+var row = vars.dbSearchResponse[0]
+var code = row.provider_code default ""
+// provider_external_id is the partner's own id; external_id is only the row key
+var ext = if (isEmpty(row.provider_external_id)) row.external_id else row.provider_external_id
+---
+{
+	code: code,
+	ref: if (ext is String) (if (ext startsWith (code ++ ":")) substringAfter(ext, ":") else ext) else ext,
+	source: if (isEmpty(code)) null else "db",
+	prescriptionId: vars.routing.prescriptionId
+}]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+			</when>
+		</choice>
+		<ee:transform doc:name="Set Request Variables From Routing" doc:id="5fb322e8-a26a-4921-b6a3-43153620543f">
+			<ee:message />
+			<ee:variables >
+				<ee:set-variable variableName="request" ><![CDATA[%dw 2.0
+output application/json
+---
+if (isEmpty(vars.routing.code)) null else vars.connectionDetails[vars.routing.code]]]></ee:set-variable>
+				<ee:set-variable variableName="entity" ><![CDATA[%dw 2.0
+output application/json
+---
+"prescription-fill"]]></ee:set-variable>
+				<ee:set-variable variableName="externalId" ><![CDATA[%dw 2.0
+output application/json
+---
+vars.routing.ref]]></ee:set-variable>
+				<ee:set-variable variableName="id" ><![CDATA[%dw 2.0
+output application/json
+---
+payload.id]]></ee:set-variable>
+				<ee:set-variable variableName="provider" ><![CDATA[%dw 2.0
+output application/json
+---
+vars.routing.code]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<ee:transform doc:name="Set Partner Payload" doc:id="a4e1c7d2-8b3f-4d6a-9e05-3c2b1f7a8d60">
+			<ee:message>
+				<ee:set-payload resource="dwl/create-prescription-fill.dwl" />
+			</ee:message>
+		</ee:transform>
+		<ee:transform doc:name="Set Request Variables" doc:id="81ba4d9a-79dc-4cae-99df-e1429ec20f39" >
+			<ee:message >
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="request" ><![CDATA[%dw 2.0
+output application/json
+---
+if (vars.request == null) null else (vars.provider match {
+	case str if str == "PMD" -> vars.request ++ {
+		"queryParams": {
+			"event": if ( (payload.status == "Hold") or (payload.status == "Pre-Check") ) "prescription_created" else "status_change"
+		}
+	}
+	// WellieMD takes only new-order, shipped and delivered: send new orders here, labels go out as "shipped"
+	case str if str == "WLM" -> if ( (payload.status == "Hold") or (payload.status == "Pre-Check") ) (vars.request ++ {
+		"uriParams": {
+			"event": "new-order"
+		}
+	}) else null
+	else -> vars.request
+})]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Choice" doc:id="45676288-4a97-4b00-9406-1284f4e9d36b" >
+			<when expression="#[!isEmpty(vars.request.url)]">
+				<logger level="INFO" doc:name="Log Provider Information" doc:id="b5a3ac9b-8e55-49a5-8a8f-6dd0ad59e12d" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"messages" : "Posting prescription-fill status to provider",&#10;	"provider":  vars.provider,&#10;	"fill_id": vars.id,&#10;	"status": payload.status&#10;}]'/>
+				<flow-ref doc:name="common-request-flow" doc:id="03279ec9-8a69-46fe-ab67-c28356c8539b" name="common-request-flow" />
+				<set-payload value="#[%dw 2.0&#10;output application/json&#10;---&#10;payload]" doc:name="Set Prescription Fill Output Response" doc:id="f172d0bf-c915-4e83-b452-0eb5fee29280" />
+			</when>
+			<otherwise >
+				<!-- Not a partner order, or the partner has no webhook URL in this environment: acknowledge so DRX does not retry or flag the webhook -->
+				<ee:transform doc:name="Set Ignored Response" doc:id="b1b99ca3-936c-4022-8b2b-bdfc761d2359" >
+					<ee:message >
+						<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"status": "Ignored",
+	"reason_code": if (isEmpty(vars.provider)) "NOT_A_PARTNER_ORDER" else if (vars.provider == "WLM") "STATUS_NOT_SENT_TO_PARTNER" else "NO_WEBHOOK_URL",
+	"provider": if (isEmpty(vars.provider)) null else vars.provider,
+	"id": vars.id
+}]]></ee:set-payload>
+					</ee:message>
+					<ee:variables >
+						<ee:set-variable variableName="httpStatus" ><![CDATA[%dw 2.0
+output application/json
+---
+200]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<logger level="INFO" doc:name="Log Ignored" doc:id="b80c051d-3b7b-49eb-bb84-fda743d7907c" message="#[%dw 2.0&#10;output application/json&#10;---&#10;payload]" />
+			</otherwise>
+		</choice>
+	</sub-flow>
+</mule>

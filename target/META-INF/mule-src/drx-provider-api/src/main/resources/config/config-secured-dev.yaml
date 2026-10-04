@@ -1,0 +1,109 @@
+# use this file for encrypted user/password information.
+# Unencrypted values may be used in this file using standard yaml syntax
+# Encrypted values must be enclosed in ![] within the quotes.
+  
+#Any Point MQ
+anypoint:
+  mq:
+    clientId: "![AmXNk8d4QAnSKDsF04IsrJb0pnYL39783cRXswjyuLufD8jjhHLr8GQsKdaFwUp8]"
+    clientSecret: "![BPZ03/LAoCbWGtRqgE2jVUcs4q6lnFdTnMSgBXkRZU8bstb8K8fjcfHb9+XT5McK]"
+    
+# Outlook
+outlook: 
+  clientId: "![/5GBJSyXuOGHoZpGxQYALixhAOao53ZI9c73fWiLNyl2ybVxbwGXxbMZ+5XbchJr]"
+  clientSecret: "![GfT3bGKkAUVtTfRC+piPVKdfwY3+YfDZdLm4X6Gl0nLJzQdNSFiHz8fQ4M5QKSFp]"
+  
+# Database
+db:
+  password: "![pcIBLtikMw/3Qxmr6VG53ElaFysodP25+77Kh3mHhXA=]" 
+  
+#Providers  Credentials
+lum:
+  username: "![y14JpxtJMKOONfucJBZMjQ==]"
+  password: "![hQK/nIQ7SAL0M4g+8RqTyw==]"
+  auth: "Basic bHVtaW1lZHM6THVtaW1lZHMxMjMh"
+amb:
+  clientId: ""
+  clientSecret: ""
+arc:
+  clientId: ""
+  clientSecret: ""
+ash:
+  clientId: ""
+  clientSecret: ""
+bsk:
+  auth: "Basic dGVzdDp0ZXN0"
+bge:
+  xdrxkey: "![rx2WHH+6ZhE50xGkcHu1VozMCEdtEbsQpJseXconUN2OUwobx64HEhs3lq5rmv1H]"
+bom:
+  clientId: ""
+  clientSecret: ""
+bnd:
+  clientId: "![5n/eh6ZQRfjsaAj9Mh35CQ==]"
+  clientSecret: "![uCArfPCv9fy2QvEnULFcvKTRxFKVRF9NJxI+lVOd8IJEOmhgeA3RBfc1/DoIn2hY]"
+crv:
+  clientId: ""
+  clientSecret: ""
+edn:
+  webhookKey: "![cZ9+tij/HDEGG4eNAYzGuMDnK2eLqQFUlClQSLnPIldGYhMdtV1gUFTjwCVLeDFy]"
+eng:
+  clientId: ""
+  clientSecret: ""
+fdm:
+  clientId: ""
+  clientSecret: ""
+mpr:
+  clientId: ""
+  clientSecret: ""
+mch:
+  clientId: ""
+  clientSecret: ""
+msg:
+  clientId: ""
+  clientSecret: ""
+nov:
+  clientId: ""
+  clientSecret: ""
+ord:
+  clientId: ""
+  clientSecret: ""
+pmd:
+  webhookSecret: "4c2316d6da45493b5f48f4f85d236e25da5d53b7738f475f196c617b55cee775"
+  vercelBypass: "accQa0SgFwKG3CASocWKnqZ6aKc8QRAP"
+scs:
+  clientId: ""
+  clientSecret: ""
+shn:
+  clientId: ""
+  clientSecret: ""
+  webhookKey: "sfs_k_qCdOx2T23jGcUr2657u2i5tSF70VlF-cRYylQLn80"
+svg:
+  clientId: ""
+  clientSecret: ""
+tlg:
+  publicKey: "ctrlpub_84ae28346399e2dc893f0e04b7764f1e"
+  secretKey: "ctrlsec_527e34e95c7dcf77303ca6697f928aad4f69ab20a8f1191e2aa11b232d85217d"
+trt:
+  clientId: ""
+  clientSecret: ""
+vit:
+  clientId: ""
+  clientSecret: ""
+wlm:
+  authToken: "![j7oPhs21m5bDoqiMsSU3iQ+zTjUdD4nE+WL/xkHdGAnP8uXvAC4yiBn1rGVL47R/]"
+mhi:
+  zapikey: "![mOiXvHB45t5OMuWCWLlC2gF5/Cy1MRuFe8u+F1QB12mtHWET3Qne5OK/IHTAJeSS18gA6IZOnJ3leTWsCi8X0U2Z+rxOMVNQ2efhRhmLzG0=]"
+ovh:
+  clientId: ""
+  clientSecret: ""
+gim:
+  clientId: ""
+  clientSecret: ""
+
+# r15: DRX key for the label sweep (the pharmacy app's encrypted value)
+drx:
+  key: "![gs1J1GZKppKbEtX1e5ugDe7SjBkCp0n3THhTDsdZOBNbhy5HYG5v2W6cSA0tbqXG]"
+
+# r21: OnlyScripts webhook secret (sent as X-DRX-Key)
+ons:
+  xdrxkey: "f8f71b5a91bd7211f080b543c5763e149931141116aaa1dde9c406a08752048c"

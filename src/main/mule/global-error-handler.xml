@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core"
+	xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd">
+	<error-handler name="common-error-handler" doc:id="8b9faeaa-fbd5-4acf-9ca8-bcbbf3dc9ba2" >
+		<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" doc:id="2d375c13-f0be-4663-8ace-da233ebb885b" type="HTTP:NOT_FOUND, HTTP:BAD_GATEWAY, HTTP:CONNECTIVITY, HTTP:INTERNAL_SERVER_ERROR, HTTP:SERVICE_UNAVAILABLE, HTTP:TIMEOUT, HTTP:TOO_MANY_REQUESTS, HTTP:RETRY_EXHAUSTED">
+			<ee:transform doc:name="Create Error Payload" doc:id="8ce4c823-034c-4ba5-95ef-284c23ad4ecc">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+var errorPayload = error
+---
+{
+	"errorMessage": errorPayload.errorMessage.payload default errorPayload.detailedDescription,
+	"errorType": (errorPayload.errorType.namespace default '') ++ ":" ++ (errorPayload.errorType.identifier default ''),
+	"correlationId": vars.correlationId,
+	"applicationName": vars.flowName,
+	"time": now()
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+		
+</on-error-propagate>
+		<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="f843bffd-cb90-4247-9107-234df9a55214">
+			<ee:transform doc:name="Create Error Payload" doc:id="417d1e71-1177-4cdb-9998-8bf2fe54791a">
+				<ee:message>
+				</ee:message>
+				<ee:variables >
+					<ee:set-variable variableName="haltFlow" ><![CDATA[%dw 2.0
+output application/json
+---
+true]]></ee:set-variable>
+					<ee:set-variable variableName="error" ><![CDATA[%dw 2.0
+output application/json
+var errorPayload = error
+---
+{
+	"errorMessage": errorPayload.errorMessage.payload default errorPayload.detailedDescription,
+	"errorType": (errorPayload.errorType.namespace default '') ++ ":" ++ (errorPayload.errorType.identifier default ''),
+	"correlationId": vars.correlationId,
+	"applicationName": vars.flowName,
+	"time": now()
+}]]></ee:set-variable>
+				</ee:variables>
+			
+</ee:transform>
+
+		</on-error-continue>
+	</error-handler>
+	<error-handler name="global-error-handler" doc:id="3891d801-c56c-4f37-8d2b-9811b99132d8" >
+		<on-error-propagate enableNotifications="true" logException="true" doc:name="On Error Propagate" doc:id="08f1d0f9-815a-40c0-8c9d-44fb84d3c068" type="PROCESS:HALT_FLOW">
+			<ee:transform doc:name="Create Error Payload" doc:id="426af0ef-0e96-4129-aa39-9cdf033be392" >
+				<ee:message >
+					<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+if ( !isEmpty(vars.error) ) vars.error else 
+
+{
+	"errorMessage": error.errorMessage.payload.message default error.detailedDescription,
+	"errorType": (error.errorType.namespace default '') ++ ":" ++ (error.errorType.identifier default ''),
+	"correlationId": vars.correlationId,
+	"applicationName": vars.flowName,
+	"time": now()
+}]]></ee:set-payload>
+				</ee:message>
+			</ee:transform>
+			<logger level="INFO" doc:name="Logger" doc:id="ee4bc337-f89e-459a-99de-702d70d68c72" message="#[%dw 2.0&#10;output application/json&#10;---&#10;payload]" />
+		</on-error-propagate>
+		<on-error-continue enableNotifications="true" logException="true" doc:name="On Error Continue" doc:id="388e6c69-6637-4353-9465-8cac662a9b58">
+			<anypoint-mq:publish doc:name="Publish" doc:id="3e9f3cc7-19e2-4131-948a-1f6fa3b8b7fe" config-ref="Anypoint_MQ_Config" destination="${anypoint.mq.retryQueue}" deliveryDelay="${anypoint.mq.deliveryDelay}" deliveryDelayUnit="MINUTES">
+				<anypoint-mq:body><![CDATA[#[vars.actualRequest]]]></anypoint-mq:body>
+			</anypoint-mq:publish>
+			<ee:transform doc:name="Create Error Payload" doc:id="7d1a3204-cf34-46c1-a333-a1e5dc76d5c0">
+				<ee:message>
+					<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: "Accepted"
+}]]></ee:set-payload>
+				</ee:message>
+				<ee:variables>
+					<ee:set-variable variableName="httpStatus"><![CDATA[%dw 2.0
+output application/json
+---
+202]]></ee:set-variable>
+					<ee:set-variable variableName="email"><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: {
+		subject: "RX Processing Failed After Maximum Retries",
+		body: {
+			contentType: "HTML",
+			content: "<html><body>" ++
+        "<p>Hi Team,</p>" ++
+        "<p>The RX record processing has failed after exceeding the configured retry limit due to a connection issue.</p>" ++
+        "<p><strong>Processing Details:</strong></p>" ++
+        "<ul>" ++
+          "<li><strong>Process:</strong> RX Record Processing</li>" ++
+          "<li><strong>Status:</strong> Failed after maximum retry attempts</li>" ++
+          "<li><strong>Reason:</strong> Connection issue</li>" ++
+          "<li><strong>Retry Status:</strong> Maximum retries exhausted</li>" ++
+          "<li><strong>MQ Status:</strong> Message successfully published to MQ for reprocessing</li>" ++
+        "</ul>" ++
+        "<p>The message has been successfully published to MQ and will be available for subsequent processing.</p>" ++
+        "<p>Please investigate the underlying connection issue.</p>" ++
+        "<p>Thanks.</p>" ++
+        "</body></html>"
+		},
+		toRecipients: [{
+			emailAddress: {
+				address: p('outlook.toRecipients')
+			}
+		}]
+	},
+	saveToSentItems: true
+}]]></ee:set-variable>
+				
+</ee:variables>
+			</ee:transform>
+			<!-- [STUDIO:"Flow Reference"]<flow-ref doc:name="Flow Reference" doc:id="923353ed-d128-4d86-b064-e3cff9150311" name="common-email-flow"/> [STUDIO] -->
+		
+</on-error-continue>
+	</error-handler>
+</mule>

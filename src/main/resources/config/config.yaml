@@ -1,0 +1,158 @@
+# Common properties shared across all environments
+
+# HTTP Listener Config
+http:
+ timeout: "60000"
+ listener:
+  host: "0.0.0.0"
+  port: "8081"
+  readTimeOut: "30000"
+  path: "/api/v1/*"
+  
+# Reconnection strategy
+reconnect:
+  frequency: "5000"
+  count: "1"
+
+# Retry configuration
+retry:
+  delayMillisecs: "3000"
+  numRetries: "2"
+  
+#Object Store Configurations
+objectStore:
+  ttl: "7"
+  tte: "1"
+
+# Provider Methods
+post: "POST"
+
+# DRX Entities
+prescription: "prescription"
+
+# DRX Operation
+retrieve: "retrieve"
+
+# Outlook
+outlook:
+  baseUrl: "https://graph.microsoft.com/v1.0"
+  tokenUrl: "https://login.microsoftonline.com/1277ee4f-833d-430a-9010-7fc0c48cdd46/oauth2/v2.0/token"
+  scopes: "https://graph.microsoft.com/.default"
+  fromAddress: "MulesoftNotification@bndsrx.com"
+  
+#Any Point MQ
+anypoint:
+ mq:
+  deliveryDelay: "15"
+
+# r15: label sweep (implementation/shipment.xml); env-specific settings are in config-<env>.yaml
+labelSweep:
+  frequencyMinutes: "5"
+  settleMinutes: "3"
+  lookbackHours: "24"
+  maxPages: "5"
+  maxLabelsPerRun: "150"
+  retryMinutes: "15"
+  maxAttempts: "20"
+  retryWindowHours: "48"
+  backfillHours: "48"
+  reportTo: "cdowling@bndsrx.com"
+  drx:
+    basePath: "/external_api/v1"
+
+# r16: test endpoint (implementation/shipment.xml, test-catcher-flow); on/off is in config-<env>.yaml
+testCatcher:
+  retentionDays: "7"
+  
+#Providers
+wsy:
+  provider: "WellSync"
+  method: "POST"
+lum:
+  provider: "Lumi Meds"
+  method: "POST"
+amb:
+  provider: "Amble"
+  method: "POST"
+arc:
+  provider: "Architek"
+  method: "POST"
+ash:
+  provider: "Asher Meds"
+  method: "POST"
+bsk:
+  provider: "Bask"
+  method: "POST"
+bge:
+  provider: "BigEasy"
+  method: "POST"
+bom:
+  provider: "BoomRx"
+  method: "POST"
+bnd:
+  provider: "Boudreaux internal / clinic submissions"
+  method: "POST"
+crv:
+  provider: "CareValidate"
+  method: "POST"
+edn:
+  provider: "Eden"
+  method: "POST"
+eng:
+  provider: "Enhanced Games"
+  method: "POST"
+fdm:
+  provider: "Fresh Daily Meds"
+  method: "POST"
+mpr:
+  provider: "MediProRX"
+  method: "POST"
+mch:
+  provider: "Mochi"
+  method: "POST"
+msg:
+  provider: "MSG"
+  method: "POST"
+nov:
+  provider: "Novi Meds"
+  method: "POST"
+ons:
+  provider: "OnlyScripts"
+  method: "POST"
+ord:
+  provider: "Orderly Meds"
+  method: "POST"
+pmd:
+  provider: "PreventiveMD"
+  method: "POST"
+scs:
+  provider: "Script Sure"
+  method: "POST"
+shn:
+  provider: "Shine RX"
+  method: "POST"
+svg:
+  provider: "StartVerge"
+  method: "POST"
+tlg:
+  provider: "Telegra"
+  method: "POST"
+trt:
+  provider: "TRT Boss"
+  method: "POST"
+vit:
+  provider: "VITLRX"
+  method: "POST"
+wlm:
+  provider: "WellieMD"
+  method: "POST"
+mhi:
+  provider: "Medical Health Institute"
+  method: "POST"
+# OurView, tenant code OUV
+ovh:
+  provider: "OurView"
+  method: "POST"
+gim:
+  provider: "Gimme"
+  method: "POST"

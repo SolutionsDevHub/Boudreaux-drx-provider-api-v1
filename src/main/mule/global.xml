@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mule xmlns:db="http://www.mulesoft.org/schema/mule/db"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq" xmlns:api-gateway="http://www.mulesoft.org/schema/mule/api-gateway" xmlns:apikit="http://www.mulesoft.org/schema/mule/mule-apikit" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:outlook365="http://www.mulesoft.org/schema/mule/outlook365" xmlns:secure-properties="http://www.mulesoft.org/schema/mule/secure-properties" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="
+http://www.mulesoft.org/schema/mule/db http://www.mulesoft.org/schema/mule/db/current/mule-db.xsd  http://www.mulesoft.org/schema/mule/mule-apikit http://www.mulesoft.org/schema/mule/mule-apikit/current/mule-apikit.xsd  http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd http://www.mulesoft.org/schema/mule/api-gateway http://www.mulesoft.org/schema/mule/api-gateway/current/mule-api-gateway.xsd http://www.mulesoft.org/schema/mule/secure-properties http://www.mulesoft.org/schema/mule/secure-properties/current/mule-secure-properties.xsd http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd http://www.mulesoft.org/schema/mule/outlook365 http://www.mulesoft.org/schema/mule/outlook365/current/mule-outlook365.xsd">
+    <http:listener-config name="drx-provider-api-httpListenerConfig">
+        <http:listener-connection host="${http.listener.host}" port="${http.listener.port}" readTimeout="${http.listener.readTimeOut}" />
+    </http:listener-config>
+    <apikit:config name="drx-provider-api-config" api="resource::dcaf5f94-cb8a-4545-a03d-7b50bd05e8f9:drx-provider-api:1.0.1:raml:zip:drx-provider-api.raml" outboundHeadersMapName="outboundHeaders" httpStatusVarName="httpStatus" />
+    <db:config name="Database_Config" doc:name="Database Config" doc:id="356b87e1-a9c1-4b19-9b0d-23d27979a7ae" doc:description="Database Configuration">
+        <db:generic-connection url="${db.url}" driverClassName="${db.driverClassName}" user="${db.user}" password="${secure::db.password}" />
+    </db:config>
+    <configuration-properties doc:name="Configuration properties" doc:id="daee7638-418b-4655-b410-090ebb85b4a4" file="config\config.yaml" doc:description="Common Properties" />
+    <configuration-properties doc:name="Configuration properties" doc:id="8a933e56-94d5-4ec1-83ac-facf29120382" file="config\config-${mule.env}.yaml" doc:description="Environment Specific Properties" />
+    <secure-properties:config name="Secure_Properties_Config" doc:name="Secure Properties Config" doc:id="0dce1dc6-77c6-4b76-a941-7a47ea940534" doc:description="Environment Secure Properties" file="config\config-secured-${mule.env}.yaml" key="${mule.key}" />
+    <anypoint-mq:config name="Anypoint_MQ_Config" doc:name="Anypoint MQ Config" doc:id="3cca765a-5f03-4e77-87af-83cec870a80c" doc:description="Anypoint MQ Configuration">
+        <anypoint-mq:connection clientId="${secure::anypoint.mq.clientId}" clientSecret="${secure::anypoint.mq.clientSecret}" url="${anypoint.mq.url}" />
+    </anypoint-mq:config>
+    <outlook365:outlook365-config name="Outlook365_Outlook365_Config" doc:name="Outlook365 Outlook365 Config" doc:id="94aa4a58-68d6-4f5d-aeac-971843a407d2" doc:description="Outlook365 Configuration">
+        <outlook365:oauth-client-credentials-connection baseUrl="${outlook.baseUrl}">
+            <outlook365:oauth-client-credentials clientId="${secure::outlook.clientId}" clientSecret="${secure::outlook.clientSecret}" tokenUrl="${outlook.tokenUrl}" scopes="${outlook.scopes}" />
+        </outlook365:oauth-client-credentials-connection>
+    </outlook365:outlook365-config>
+    <api-gateway:autodiscovery apiId="${api.id}" ignoreBasePath="true" doc:name="API Autodiscovery" doc:id="4e15f196-d911-4b23-8184-415791c4b4c9" doc:description="Autodiscovery Id" flowRef="drx-provider-api-main" />
+</mule>

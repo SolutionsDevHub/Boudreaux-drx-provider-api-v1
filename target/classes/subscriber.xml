@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:outlook365="http://www.mulesoft.org/schema/mule/outlook365" xmlns:anypoint-mq="http://www.mulesoft.org/schema/mule/anypoint-mq"
+	xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/anypoint-mq http://www.mulesoft.org/schema/mule/anypoint-mq/current/mule-anypoint-mq.xsd
+http://www.mulesoft.org/schema/mule/outlook365 http://www.mulesoft.org/schema/mule/outlook365/current/mule-outlook365.xsd">
+	<!-- Retries a webhook whose partner call failed. The queued message is vars.actualRequest:
+	     {correlationId, flowName, payload (the original DRX body), retryCount}. A failed retry is re-queued by global-error-handler. -->
+	<flow name="subscriber-flow" doc:id="a1aaedbc-03b2-487d-b686-675be76c62d4" >
+		<anypoint-mq:subscriber doc:name="Subscriber" doc:id="b508570e-6b29-4d55-80fc-4f38ace4e770" config-ref="Anypoint_MQ_Config" destination="${anypoint.mq.retryQueue}" acknowledgementMode="IMMEDIATE"/>
+		<ee:transform doc:name="Initiative Variables" doc:id="71aebfcf-f0d3-4f96-817b-59d6d18add5c">
+			<ee:message>
+				<ee:set-payload><![CDATA[%dw 2.0
+output application/json
+---
+payload.payload]]></ee:set-payload>
+				<ee:set-attributes><![CDATA[%dw 2.0
+output application/json
+---
+{
+	"queryParams": payload.queryParams,
+	"uriParams": payload.uriParams
+}]]></ee:set-attributes>
+			</ee:message>
+			<ee:variables>
+				<ee:set-variable variableName="correlationId"><![CDATA[%dw 2.0
+output application/json
+---
+payload."correlationId"]]></ee:set-variable>
+				<ee:set-variable variableName="startTime"><![CDATA[%dw 2.0
+output application/json
+---
+now()]]></ee:set-variable>
+				<ee:set-variable variableName="retryCount"><![CDATA[%dw 2.0
+output application/json
+---
+payload.retryCount + 1]]></ee:set-variable>
+				<ee:set-variable variableName="flowName"><![CDATA[%dw 2.0
+output application/json
+---
+payload.flowName]]></ee:set-variable>
+				<ee:set-variable variableName="appName"><![CDATA[%dw 2.0
+output application/json
+---
+app.name]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<choice doc:name="Choice" doc:id="2c36dd42-ff26-4135-8232-fc7e2993f376">
+			<when expression="#[(payload.retryCount default 0) &lt; 3]">
+				<logger level="INFO" doc:name="Start Logger" doc:id="c6b9484a-2e07-4193-9997-6d1c309418d1" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"Event": "RETRY START",&#10;	"CorrelationId": vars.correlationId,&#10;	"Flow": vars.flowName,&#10;	"Path": vars.path,&#10;	"RetryCount": vars.actualRequest.retryCount,&#10;	"Timestamp": vars.startTime&#10;}]' />
+				<flow-ref doc:name="common-request-flow" doc:id="aba56d04-f860-4e99-8a3d-c5f8ca1ac200" name="#[vars.flowName]" />
+				<logger level="INFO" doc:name="End Logger" doc:id="f8e7e185-e0a5-4697-a274-3594407be23b" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"Event": "RETRY END",&#10;	"CorrelationId": vars.correlationId,&#10;	"Flow": vars.flowName,&#10;	"Path": vars.path,&#10;	"Provider": vars.provider default "N/A",&#10;	"ProcessingTime(s)": (now() - vars.startTime).seconds,&#10;	"Timestamp": now()&#10;}]' />
+			
+</when>
+			<otherwise >
+				<ee:transform doc:name="Failure Records Unique Id" doc:id="71413bfb-3748-49d0-bb7d-a0cfc50bd07d">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable variableName="failure"><![CDATA[%dw 2.0
+output application/json
+---
+vars.flowName match {
+	case str if str == "post:\\prescription-fills:application\\json:drx-provider-api-config" -> {
+		"recordType": "PRESCRIPTION",
+		"externalId": payload.id
+	}
+	case str if str == "post:\\shipments:application\\json:drx-provider-api-config" -> {
+		"recordType": "SHIPMENT",
+		"externalId": payload.shipment.id
+	}
+	else -> {
+		"recordType": "RECORD_TYPE_UNIDENTIFIED",
+		"externalId": "NOT_FOUND"
+	}
+}
+]]></ee:set-variable>
+						<ee:set-variable variableName="retryCount"><![CDATA[%dw 2.0
+output application/json
+---
+vars.retryCount - 1]]></ee:set-variable>
+					</ee:variables>
+				</ee:transform>
+				<ee:transform doc:name="Email Template" doc:id="2b8301bc-085a-42e3-b4a5-85b3cb2fad82">
+					<ee:message />
+					<ee:variables>
+						<ee:set-variable resource="dwl/email.dwl" variableName="email" />
+					</ee:variables>
+				</ee:transform>
+				<flow-ref doc:name="common-email-flow" doc:id="c5232716-0034-49b4-9023-c214825ee240" name="common-email-flow" />
+				<logger level="ERROR" doc:name="Retries Exhausted" doc:id="7e51f932-c9b5-42eb-91ee-14d26a5dfe8e" message='#[%dw 2.0&#10;output application/json&#10;---&#10;{&#10;	"Event": "RETRIES EXHAUSTED",&#10;	"messages": "Webhook could not be delivered to the partner after all retries; dropped from the retry queue",&#10;	"CorrelationId": payload.correlationId,&#10;	"Path": payload.flowName,&#10;	"RetryCount": payload.retryCount&#10;}]' />
+			
+</otherwise>
+		</choice>
+		<error-handler ref="global-error-handler" />
+	</flow>
+</mule>
